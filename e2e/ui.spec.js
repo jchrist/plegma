@@ -1,0 +1,218 @@
+// Playwright UI spec: drives the real VS Code Electron app, opens the
+// plegma window through the command palette, and asserts on the rendered
+// webview (content, row click, screenshot).
+const { test, expect, _electron: electron } = require("@playwright/test");
+const { downloadAndUnzipVSCode } = require("@vscode/test-electron");
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { buildFixtureRepo, removeFixtureRepo } = require("../test/helpers/fixtureRepo.js");
+
+function git(dir, ...args) {
+  return execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+}
+
+const ROOT = path.resolve(__dirname, "..");
+const SHOT = path.join(__dirname, "screenshots", "ui.png");
+
+// A `fake.html` URL does not identify our webview. Every installed extension
+// gets one, and the dev host loads the developer's real ~/.vscode/extensions
+// (--user-data-dir isolates settings, not extensions), so the first match is
+// whatever else happens to be open. The suite then failed against GitLens'
+// frame while the Plegma window rendered perfectly beside it. `#plegma-initial-state`
+// is emitted only by getWebviewHtml.js, which makes it the one thing that
+// actually names our frame.
+async function findWebviewFrame(page, timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    for (const frame of page.frames()) {
+      if (!frame.url().includes("fake.html")) {
+        continue;
+      }
+      if ((await frame.locator("#plegma-initial-state").count().catch(() => 0)) > 0) {
+        return frame;
+      }
+    }
+    if (Date.now() > deadline) {
+      throw new Error("plegma webview frame (fake.html) never appeared");
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+// Open (or focus, if already open) the plegma window, then return its frame.
+// Every UI test starts this way so tests pass standalone and survive
+// worker restarts between tests.
+async function openWindow(page) {
+  await page.keyboard.press("Control+Shift+p");
+  await page.waitForSelector(".quick-input-widget", { timeout: 20000 });
+  await page.keyboard.type("plegma: Open Window");
+  await page.waitForTimeout(1500);
+  await page.keyboard.press("Enter");
+  return findWebviewFrame(page);
+}
+
+// A ref chip in the graph, not the hover card's copy of the same chip. Both
+// carry the branch title as their accessible name, so a bare getByRole matches
+// two and Playwright's strict mode refuses to click either.
+function branchChip(frame, name) {
+  return frame
+    .locator("table.plegma-history-table")
+    .getByRole("button", { name: new RegExp(`^Branch ${name}`) });
+}
+
+test.describe("plegma window in real VS Code", () => {
+  let dir;
+  let app;
+  let page;
+  let profileDir;
+
+  test.beforeAll(async () => {
+    ({ dir } = await buildFixtureRepo());
+    const executablePath = await downloadAndUnzipVSCode("stable");
+    // Isolated profile: without it the test binary forwards to any
+    // running desktop VS Code (same default user-data-dir) and exits.
+    profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "plegma-ui-profile-"));
+    app = await electron.launch({
+      executablePath,
+      args: [
+        "--new-window",
+        "--disable-workspace-trust",
+        "--disable-updates",
+        "--skip-welcome",
+        "--skip-release-notes",
+        "--no-sandbox",
+        `--user-data-dir=${profileDir}`,
+        `--extensionDevelopmentPath=${ROOT}`,
+        dir,
+      ],
+    });
+    page = await app.firstWindow();
+    await page.waitForTimeout(10000);
+  });
+
+  test.afterAll(async () => {
+    if (app) {
+      await app.close();
+    }
+    if (dir) {
+      await removeFixtureRepo(dir);
+    }
+    if (profileDir) {
+      fs.rmSync(profileDir, { recursive: true, force: true });
+    }
+  });
+
+  test("opens the window from the palette and renders the graph", async () => {
+    const frame = await openWindow(page);
+    await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
+    await expect(frame.getByText("refactor: rename app to main")).toBeVisible();
+    await expect(frame.getByText("feat: feature tweak")).toBeVisible();
+    // Branch chips and tag render next to the commits.
+    const body = await frame.locator("body").innerText();
+    expect(body).toMatch(/main/);
+    expect(body).toMatch(/v0\.1/);
+  });
+
+  test("clicking a commit shows its files, then screenshots", async () => {
+    const frame = await openWindow(page);
+    await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
+    await frame.getByText("feat: initial app", { exact: true }).click();
+    await frame.getByText("Files — feat: initial app", { exact: true }).waitFor({ timeout: 15000 });
+    await frame.getByText("app.js", { exact: true }).waitFor({ timeout: 15000 });
+    const body = await frame.locator("body").innerText();
+    expect(body).toMatch(/app\.js|main\.js/);
+    fs.mkdirSync(path.dirname(SHOT), { recursive: true });
+    await page.screenshot({ path: SHOT });
+    expect(fs.existsSync(SHOT)).toBe(true);
+  });
+
+  test("dirty tree shows the worktree bar and Stash really stashes", async () => {
+    const frame = await openWindow(page);
+    await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
+    fs.writeFileSync(path.join(dir, "app.js"), "console.log(99);\n");
+    // The 5s fingerprint poll picks up the dirty tree. Match the bar itself:
+    // the dirty commit row repeats the same words, so the text matches two.
+    const bar = frame.locator(".plegma-worktree-bar");
+    await bar.waitFor({ timeout: 30000 });
+    await frame.getByRole("button", { name: "Stash changes" }).click();
+    // The stash lands as a row in the Stashes group. There is no "Stashed 1
+    // file" toast to wait on — the UI reports the stash by listing it.
+    const stashes = frame.getByRole("group", { name: "Stashes" });
+    await stashes.waitFor({ timeout: 30000 });
+    await expect(stashes).toContainText("WIP on main");
+    expect(git(dir, "stash", "list").length).toBeGreaterThan(0);
+    expect(git(dir, "status", "--porcelain")).toBe("");
+    await bar.waitFor({ state: "detached", timeout: 30000 });
+    // Restore the fixture to a clean tree for later tests.
+    execFileSync("git", ["stash", "pop", "--quiet"], { cwd: dir });
+    execFileSync("git", ["checkout", "--", "app.js"], { cwd: dir });
+    expect(git(dir, "status", "--porcelain")).toBe("");
+  });
+
+  test("commit menu creates a branch through the input box", async () => {
+    const frame = await openWindow(page);
+    await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
+    await frame.getByText("feat: initial app", { exact: true }).click({ button: "right" });
+    await frame.getByText("Create Branch…").click();
+    // showInputBox appears in the main window, not the webview frame.
+    await page.waitForSelector(".quick-input-widget", { timeout: 20000 });
+    await page.keyboard.type("e2e-ui-branch");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => git(dir, "branch", "--list", "e2e-ui-branch"), { timeout: 30000 })
+      .not.toBe("");
+    const tip = git(dir, "rev-parse", "e2e-ui-branch");
+    const all = git(dir, "rev-list", "--format=%H %s", "--all");
+    expect(all).toContain(tip);
+    execFileSync("git", ["branch", "-D", "e2e-ui-branch"], { cwd: dir });
+  });
+
+  test("a branch chip's menu has both the commit's and the branch's actions", async () => {
+    const frame = await openWindow(page);
+    await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
+    // A left click only selects: no menu, and the commit shows in the panel.
+    await branchChip(frame, "feature").click();
+    await expect(frame.locator(".plegma-menu")).toHaveCount(0);
+    // Right-click the chip: the commit's actions and the branch's, together.
+    await branchChip(frame, "feature").click({ button: "right" });
+    // The commit's own items, then the branch's. Labels name their target
+    // ("Rename feature…", "Delete feature") so both sets are unambiguous.
+    await frame.getByText("Open Changes").waitFor({ timeout: 15000 });
+    await frame.getByText("Copy Commit Hash").waitFor({ timeout: 15000 });
+    await frame.getByText("Create Branch…").waitFor({ timeout: 15000 });
+    await frame.getByText("Rename feature…").waitFor({ timeout: 15000 });
+    await frame.getByText("Delete feature").waitFor({ timeout: 15000 });
+    // Any click elsewhere dismisses it. The menu sits over the graph, so click
+    // the toolbar title rather than the row underneath it — otherwise the menu
+    // intercepts the click and the test asserts a dismissal that never ran.
+    await frame.getByText("History", { exact: true }).click();
+    await expect(frame.locator(".plegma-menu")).toHaveCount(0);
+  });
+
+  test("double-clicking a branch chip checks it out", async () => {
+    const frame = await openWindow(page);
+    await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
+    expect(git(dir, "branch", "--show-current")).toBe("main");
+    // Settle the layout before the double click. The first click of a dblclick
+    // selects the commit, which opens the Files panel and pushes every graph
+    // row down ~20px; the second click then misses the chip entirely and the
+    // browser pairs the two clicks against a common ancestor instead. A human
+    // does not hit this — the reflow waits on a git round trip that is slower
+    // than the gap between their clicks — but Playwright's two clicks are
+    // back-to-back and lose the race every time.
+    await branchChip(frame, "feature").click();
+    await page.waitForTimeout(1500);
+    const chip = await branchChip(frame, "feature").boundingBox();
+    await expect
+      .poll(() => branchChip(frame, "feature").boundingBox())
+      .toEqual(chip);
+    await branchChip(frame, "feature").dblclick();
+    await expect
+      .poll(() => git(dir, "branch", "--show-current"), { timeout: 30000 })
+      .toBe("feature");
+    execFileSync("git", ["checkout", "--quiet", "main"], { cwd: dir });
+    expect(git(dir, "branch", "--show-current")).toBe("main");
+  });
+});

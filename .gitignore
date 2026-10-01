@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+.vscode-test/
+test-results/
+e2e/screenshots/
+*.vsix
+.DS_Store
+
+# Local tooling, not part of the published project.
+.vite-hooks/
+scripts/
+
+# Per-developer agent notes. See AGENTS.md.
+AGENTS.local.md

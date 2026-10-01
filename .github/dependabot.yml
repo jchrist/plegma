@@ -1,0 +1,27 @@
+# One PR per run, never one per package. Dependabot's default opens a separate
+# PR for every dependency, which is exactly the noise this repo does not want.
+#
+# `groups: "*"` puts every bump in one group so they land together and the
+# lockfile stays internally consistent, rather than layering a second bump onto
+# an already-stale tree. `open-pull-requests-limit: 1` is a backstop.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      npm:
+        patterns:
+          - "*"
+    ignore:
+      # vite-plus pins @vitest/browser-preview, whose peer range is an exact
+      # vitest version. vitest therefore cannot be bumped on its own: npm
+      # rejects it with ERESOLVE and the PR would never go green. Bump it by
+      # hand in the same change as vite-plus, then delete this entry.
+      - dependency-name: "vitest"
+        versions: [">=5.0.2"]

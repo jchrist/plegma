@@ -1,0 +1,185 @@
+# Continuous integration for the extension. These checks are the required status
+# checks on main — a PR cannot merge until all of them are green.
+#
+# Cheapest gate first, so a plain logic mistake fails in ~90s and never waits
+# for an editor to boot:
+#
+#   unit (22.x|24.x)  - `npm test`: the vitest suites, no display, no network.
+#   package           - compiles both bundles and builds the vsix, so a bad
+#                       contributes.json or .vscodeignore fails here rather than
+#                       at release time.
+#   e2e (editor host) - mocha inside a real VS Code.
+#   e2e (playwright ui) - Playwright driving the real VS Code Electron window.
+#
+# The two e2e jobs need an X display and Chromium's shared libraries; GitHub's
+# runner image provides neither guarantee, so both are set up explicitly below.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Superseded PR runs are dead weight. On main, let a run finish: truncating the
+# record of a pushed commit is worse than the minutes it saves.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Read-only by default. Nothing in CI writes back to the repository.
+permissions:
+  contents: read
+
+env:
+  # The suites build throwaway git repos in $TMPDIR and commit in them. The
+  # fixtures set a repo-local identity, but a stray commit outside one would
+  # otherwise fail with "Please tell me who you are" — these variables answer
+  # that for every repo the run touches.
+  GIT_AUTHOR_NAME: plegma-ci
+  GIT_AUTHOR_EMAIL: ci@users.noreply.github.com
+  GIT_COMMITTER_NAME: plegma-ci
+  GIT_COMMITTER_EMAIL: ci@users.noreply.github.com
+
+jobs:
+  unit:
+    name: unit (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One dead Node line must not hide the other's result.
+      fail-fast: false
+      matrix:
+        # vite-plus requires ^22.18.0 || ^24.11.0; `22.x` and `24.x` resolve to
+        # the latest patch of each, which satisfies both.
+        node: ["22.x", "24.x"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: npm ci
+
+      # `npm test` is not self-contained: test/render.test.js reads the real
+      # out/webview.js bundle and mounts it in jsdom, so a fresh checkout has
+      # nothing to read and 84 tests silently skip. Compile first, or CI is
+      # quietly weaker than a local run.
+      - run: npm run compile
+
+      - run: npm test
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.x
+
+      - run: npm ci
+
+      # `vscode:prepublish` already runs compile, but run it as its own step so a
+      # build failure is not reported as a packaging failure.
+      - run: npm run compile
+
+      # vsce is strict about packaging metadata (icon size, contributed command
+      # ids, files that must be excluded). Those mistakes otherwise surface
+      # only when cutting a release, by which point they are release blockers.
+      - run: npm run package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plegma-vsix
+          path: "*.vsix"
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e-editor-host:
+    name: e2e (editor host)
+    runs-on: ubuntu-latest
+    # Downloads an editor and boots it under a virtual display; generous, but a
+    # hung Electron must not burn the 6h job ceiling.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.x
+
+      - run: npm ci
+
+      # Electron needs Chromium's shared libraries. Playwright's installer
+      # already knows the Ubuntu 24.04 package renames (libasound2 ->
+      # libasound2t64 and friends) that a hand-written apt line keeps getting
+      # wrong.
+      #
+      # Preserve PATH under sudo: setup-node put the upgraded npm on it, and a
+      # bare `sudo npx` falls back to the image's npm 10, which dies on the
+      # devEngines pin before doing anything.
+      - name: Install Electron runtime libraries
+        run: sudo env PATH="$PATH" npx playwright install-deps chromium
+
+      # @vscode/test-electron caches its download in .vscode-test/. The key is
+      # unique per run so each run re-saves a fresh copy of "stable", and the
+      # restore key pulls the newest existing cache, which keeps that copy
+      # rolling forward instead of pinning a version forever.
+      - name: Restore downloaded VS Code
+        uses: actions/cache@v6
+        with:
+          path: .vscode-test
+          key: ${{ runner.os }}-vscode-stable-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-vscode-stable-
+
+      - name: Run the editor-host suite
+        run: xvfb-run -a npm run test:e2e
+
+  e2e-playwright-ui:
+    name: e2e (playwright ui)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.x
+
+      - run: npm ci
+
+      # Same PATH reason as above: bare `sudo npx` finds npm 10, not the pin.
+      - name: Install Electron runtime libraries
+        run: sudo env PATH="$PATH" npx playwright install-deps chromium
+
+      # Same download cache as the editor-host job; both use "stable".
+      - name: Restore downloaded VS Code
+        uses: actions/cache@v6
+        with:
+          path: .vscode-test
+          key: ${{ runner.os }}-vscode-stable-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-vscode-stable-
+
+      # These specs launch the VS Code Electron build directly through
+      # _electron.launch({ executablePath }), so no Playwright browser download
+      # is needed — only the OS libraries from the step above.
+      - name: Run the UI suite
+        run: xvfb-run -a npm run test:e2e:ui
+
+      # The specs assert that two screenshots differ, so a failure here is
+      # invisible from the log alone. Upload them even when the job fails.
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-screenshots
+          path: e2e/screenshots/*.png
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,54 @@
+# Node + npm + ~/.npm cache, in the order this repo actually needs.
+#
+# Composed rather than repeated for two reasons:
+#
+#   1. package.json pins npm 11.19.0 via devEngines, the Node 22 runner ships
+#      10.9.9, and npm refuses to run at all when the two disagree. setup-node
+#      runs `npm config get cache` for its own `cache: npm` the moment it
+#      installs Node, so that option cannot be used here — hence this action.
+#   2. Even the upgrade step has to run outside the workspace. npm reads
+#      devEngines from the nearest package.json, so `npm install -g npm@11`
+#      run in the repo fails on the very mismatch it is fixing. Run it from a
+#      directory with no package.json in it.
+
+name: Setup Node
+description: Install Node, match the pinned npm, and cache the npm store
+
+inputs:
+  node-version:
+    description: Node version to install, e.g. 24.x
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        # v7 auto-enables npm caching when it finds `packageManager` in
+        # package.json, and it resolves the cache path with `npm config get
+        # cache` — which is the npm 10 command that dies on devEngines. Off;
+        # the explicit actions/cache step below does the same job, in order.
+        package-manager-cache: false
+
+    - name: Match the pinned npm
+      shell: bash
+      run: |
+        pinned=$(node -p "require('${{ github.workspace }}/package.json').devEngines.packageManager.version")
+        echo "pinned npm: $pinned"
+        # $(mktemp -d) so the upgrade never sees this repo's devEngines.
+        cd "$(mktemp -d)"
+        if [ "$(npm --version)" != "$pinned" ]; then
+          echo "runner ships npm $(npm --version)"
+          npm install -g "npm@$pinned"
+        fi
+        npm --version
+
+    # Keyed on the lockfile alone: node_modules is cheap to rebuild from a warm
+    # store, and a cache that varied per Node version would just hold the same
+    # tarballs twice.
+    - uses: actions/cache@v6
+      with:
+        path: ~/.npm
+        key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: npm-${{ runner.os }}-

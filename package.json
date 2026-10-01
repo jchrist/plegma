@@ -1,0 +1,92 @@
+{
+  "name": "plegma",
+  "displayName": "Plegma",
+  "version": "0.0.1",
+  "description": "Git history graph: commit lanes, branches and tags, file diff, squash, reword, drop, rebase.",
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "branch",
+    "commit",
+    "dag",
+    "git",
+    "graph",
+    "history",
+    "log"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jchrist/plegma"
+  },
+  "publisher": "jchrist",
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "node esbuild.mjs && vp build --config webview.vite.config.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "watch:webview": "vp build --watch --config webview.vite.config.mjs",
+    "vscode:prepublish": "npm run compile",
+    "test": "vp test run",
+    "test:e2e": "npm run compile && node ./test/vscode/runTest.js",
+    "test:e2e:ui": "npm run compile && xvfb-run -a playwright test --config e2e/playwright.config.cjs",
+    "package": "vsce package --no-dependencies",
+    "prepare": "vp config"
+  },
+  "dependencies": {
+    "@voidzero-dev/vite-plus-core": "1.0.0",
+    "vue": "3.5.43"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@vitejs/plugin-vue": "6.0.9",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.28.2",
+    "jsdom": "30.1.1",
+    "mocha": "12.0.3",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0",
+    "vite-plus": "1.0.0",
+    "vitest": "5.0.1"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0"
+  },
+  "contributes": {
+    "icons": {
+      "plegma-mark": {
+        "description": "Plegma",
+        "default": {
+          "fontPath": "resources/plegma.ttf",
+          "fontCharacter": "\\E000"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "plegma.openGitWindow",
+        "title": "Plegma: Open Window"
+      },
+      {
+        "command": "plegma.probeGitService",
+        "title": "Plegma: Probe Git Service"
+      }
+    ]
+  },
+  "activationEvents": [
+    "onCommand:plegma.openGitWindow",
+    "onStartupFinished"
+  ],
+  "icon": "resources/icon.png",
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": "11.19.0",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  }
+}
