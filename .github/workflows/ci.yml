@@ -63,6 +63,12 @@ jobs:
 
       - run: npm ci
 
+      # `npm test` is not self-contained: test/render.test.js reads the real
+      # out/webview.js bundle and mounts it in jsdom, so a fresh checkout has
+      # nothing to read and 84 tests silently skip. Compile first, or CI is
+      # quietly weaker than a local run.
+      - run: npm run compile
+
       - run: npm test
 
   package:
