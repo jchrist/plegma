@@ -137,7 +137,11 @@ test.describe("plegma window in real VS Code", () => {
     const bar = frame.locator(".plegma-worktree-bar");
     await bar.waitFor({ timeout: 30000 });
     await frame.getByRole("button", { name: "Stash changes" }).click();
-    await frame.getByText(/Stashed 1 file/).waitFor({ timeout: 30000 });
+    // The stash lands as a row in the Stashes group. There is no "Stashed 1
+    // file" toast to wait on — the UI reports the stash by listing it.
+    const stashes = frame.getByRole("group", { name: "Stashes" });
+    await stashes.waitFor({ timeout: 30000 });
+    await expect(stashes).toContainText("WIP on main");
     expect(git(dir, "stash", "list").length).toBeGreaterThan(0);
     expect(git(dir, "status", "--porcelain")).toBe("");
     await bar.waitFor({ state: "detached", timeout: 30000 });
@@ -173,12 +177,17 @@ test.describe("plegma window in real VS Code", () => {
     await expect(frame.locator(".plegma-menu")).toHaveCount(0);
     // Right-click the chip: the commit's actions and the branch's, together.
     await branchChip(frame, "feature").click({ button: "right" });
+    // The commit's own items, then the branch's. Labels name their target
+    // ("Rename feature…", "Delete feature") so both sets are unambiguous.
     await frame.getByText("Open Changes").waitFor({ timeout: 15000 });
     await frame.getByText("Copy Commit Hash").waitFor({ timeout: 15000 });
-    await frame.getByText("New branch from here…").waitFor({ timeout: 15000 });
-    await frame.getByText("Rename…").waitFor({ timeout: 15000 });
-    // Any click elsewhere dismisses it.
-    await frame.getByText("feat: initial app", { exact: true }).click();
+    await frame.getByText("Create Branch…").waitFor({ timeout: 15000 });
+    await frame.getByText("Rename feature…").waitFor({ timeout: 15000 });
+    await frame.getByText("Delete feature").waitFor({ timeout: 15000 });
+    // Any click elsewhere dismisses it. The menu sits over the graph, so click
+    // the toolbar title rather than the row underneath it — otherwise the menu
+    // intercepts the click and the test asserts a dismissal that never ran.
+    await frame.getByText("History", { exact: true }).click();
     await expect(frame.locator(".plegma-menu")).toHaveCount(0);
   });
 
@@ -186,6 +195,19 @@ test.describe("plegma window in real VS Code", () => {
     const frame = await openWindow(page);
     await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
     expect(git(dir, "branch", "--show-current")).toBe("main");
+    // Settle the layout before the double click. The first click of a dblclick
+    // selects the commit, which opens the Files panel and pushes every graph
+    // row down ~20px; the second click then misses the chip entirely and the
+    // browser pairs the two clicks against a common ancestor instead. A human
+    // does not hit this — the reflow waits on a git round trip that is slower
+    // than the gap between their clicks — but Playwright's two clicks are
+    // back-to-back and lose the race every time.
+    await branchChip(frame, "feature").click();
+    await page.waitForTimeout(1500);
+    const chip = await branchChip(frame, "feature").boundingBox();
+    await expect
+      .poll(() => branchChip(frame, "feature").boundingBox())
+      .toEqual(chip);
     await branchChip(frame, "feature").dblclick();
     await expect
       .poll(() => git(dir, "branch", "--show-current"), { timeout: 30000 })

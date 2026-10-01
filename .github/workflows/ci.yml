@@ -1,14 +1,14 @@
-# Continuous integration for the extension. These four jobs are the required
-# status checks on main — a PR cannot merge until all of them are green.
+# Continuous integration for the extension. These checks are the required status
+# checks on main — a PR cannot merge until all of them are green.
 #
 # Cheapest gate first, so a plain logic mistake fails in ~90s and never waits
 # for an editor to boot:
 #
-#   unit (22.x|24.x) - `npm test`: the vitest suites, no display, no network.
-#   package          - compiles both bundles and builds the vsix, so a bad
-#                      contributes.json or .vscodeignore fails here rather than
-#                      at release time.
-#   e2e (editor host)- mocha inside a real VS Code.
+#   unit (22.x|24.x)  - `npm test`: the vitest suites, no display, no network.
+#   package           - compiles both bundles and builds the vsix, so a bad
+#                       contributes.json or .vscodeignore fails here rather than
+#                       at release time.
+#   e2e (editor host) - mocha inside a real VS Code.
 #   e2e (playwright ui) - Playwright driving the real VS Code Electron window.
 #
 # The two e2e jobs need an X display and Chromium's shared libraries; GitHub's
@@ -57,12 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/setup-node
         with:
           node-version: ${{ matrix.node }}
-          # Caches ~/.npm by keying on package-lock.json, so `npm ci` is a
-          # warm store rather than a cold download.
-          cache: npm
 
       - run: npm ci
 
@@ -75,10 +72,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.x
-          cache: npm
 
       - run: npm ci
 
@@ -107,10 +103,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.x
-          cache: npm
 
       - run: npm ci
 
@@ -143,10 +138,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.x
-          cache: npm
 
       - run: npm ci
 
@@ -163,12 +157,12 @@ jobs:
             ${{ runner.os }}-vscode-stable-
 
       # These specs launch the VS Code Electron build directly through
-      # _electron.launch({ executablePath }), so no Playwright browser
-      # download is needed — only the OS libraries from the step above.
+      # _electron.launch({ executablePath }), so no Playwright browser download
+      # is needed — only the OS libraries from the step above.
       - name: Run the UI suite
         run: xvfb-run -a npm run test:e2e:ui
 
-      # The specs only assert that two screenshots differ, so a failure here is
+      # The specs assert that two screenshots differ, so a failure here is
       # invisible from the log alone. Upload them even when the job fails.
       - name: Upload screenshots
         if: always()

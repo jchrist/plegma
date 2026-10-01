@@ -1,0 +1,45 @@
+# Node + npm + ~/.npm cache, in the order this repo actually needs.
+#
+# Composed rather than repeated because setup-node's own `cache: npm` runs
+# `npm config get cache` the moment it installs Node, and on the Node 22 leg
+# that npm is 10.9.9 — which does not understand `devEngines` and hard-fails
+# on the pinned 11.19.0 before a single step of ours has run. So: install
+# Node, upgrade npm to the pin, then cache.
+#
+# GitHub's runner image ships Node 24 with npm 11.19.0 already, so this is a
+# no-op there; on Node 22 it is the difference between a green job and
+# EBADDEVENGINES.
+
+name: Setup Node
+description: Install Node, match the pinned npm, and cache the npm store
+
+inputs:
+  node-version:
+    description: Node version to install, e.g. 24.x
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Match the pinned npm
+      shell: bash
+      run: |
+        pinned=$(node -p "require('./package.json').devEngines.packageManager.version")
+        if [ "$(npm --version)" != "$pinned" ]; then
+          echo "runner ships npm $(npm --version), package.json pins $pinned"
+          npm install -g "npm@$pinned"
+        fi
+        npm --version
+
+    # Keyed on the lockfile alone: node_modules is cheap to rebuild from a warm
+    # store, and a cache that went stale per-Node-version would just evict the
+    # same tarballs twice.
+    - uses: actions/cache@v6
+      with:
+        path: ~/.npm
+        key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: npm-${{ runner.os }}-

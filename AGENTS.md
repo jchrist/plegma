@@ -75,9 +75,22 @@ replacement.
   `os.tmpdir()`; nothing touches the network.
 - `test/vscode/` — mocha inside the real editor host (`npm run test:e2e`).
   Needs a display: `xvfb-run -a npm run test:e2e` works on headless machines.
-- `e2e/` — Playwright driving a real editor for UI-level checks.
+- `e2e/` — Playwright driving a real editor for UI-level checks. Needs a
+  display and Chromium's shared libraries: `xvfb-run -a npm run test:e2e:ui`.
 - A new behaviour needs a test that fails without it. A test that cannot fail
   is worse than no test.
+
+Two traps in `e2e/ui.spec.js` that cost real time to rediscover:
+
+- **Find the webview frame by content, not by URL.** Every installed extension
+  gets a `fake.html` frame, and the dev host loads your real
+  `~/.vscode/extensions`, so `frames().find(f => f.url().includes("fake.html"))`
+  can return another extension's frame while Plegma renders correctly beside
+  it. Match `#plegma-initial-state`, which only `getWebviewHtml.js` emits.
+- **A real `dblclick` can lose a race with a reflow.** Clicking a commit opens
+  the Files panel and shifts the graph down, so the second click misses its
+  target and the browser pairs the two against a common ancestor. Settle the
+  layout before dblclicking, or dispatch the event directly.
 
 ## CI
 
