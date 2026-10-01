@@ -79,6 +79,17 @@ replacement.
 - A new behaviour needs a test that fails without it. A test that cannot fail
   is worse than no test.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every PR to `main`, and `main` is protected:
+nothing merges without the PR and these checks, all green — `unit (22.x)`,
+`unit (24.x)`, `package`, `e2e (editor host)`, `e2e (playwright ui)`.
+
+`unit` is `npm test` and nothing else, so run it before opening a PR rather than
+in CI. `package` exists because vsce only complains about a bad icon, a bad
+contributed command id, or a missing file at packaging time — which is exactly
+when you least want to find out.
+
 ## Release and version bumps
 
 Keep these as separate, explicit requests:

@@ -16,12 +16,23 @@ function git(dir, ...args) {
 const ROOT = path.resolve(__dirname, "..");
 const SHOT = path.join(__dirname, "screenshots", "ui.png");
 
+// A `fake.html` URL does not identify our webview. Every installed extension
+// gets one, and the dev host loads the developer's real ~/.vscode/extensions
+// (--user-data-dir isolates settings, not extensions), so the first match is
+// whatever else happens to be open. The suite then failed against GitLens'
+// frame while the Plegma window rendered perfectly beside it. `#plegma-initial-state`
+// is emitted only by getWebviewHtml.js, which makes it the one thing that
+// actually names our frame.
 async function findWebviewFrame(page, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const frame = page.frames().find((f) => f.url().includes("fake.html"));
-    if (frame) {
-      return frame;
+    for (const frame of page.frames()) {
+      if (!frame.url().includes("fake.html")) {
+        continue;
+      }
+      if ((await frame.locator("#plegma-initial-state").count().catch(() => 0)) > 0) {
+        return frame;
+      }
     }
     if (Date.now() > deadline) {
       throw new Error("plegma webview frame (fake.html) never appeared");
@@ -40,6 +51,15 @@ async function openWindow(page) {
   await page.waitForTimeout(1500);
   await page.keyboard.press("Enter");
   return findWebviewFrame(page);
+}
+
+// A ref chip in the graph, not the hover card's copy of the same chip. Both
+// carry the branch title as their accessible name, so a bare getByRole matches
+// two and Playwright's strict mode refuses to click either.
+function branchChip(frame, name) {
+  return frame
+    .locator("table.plegma-history-table")
+    .getByRole("button", { name: new RegExp(`^Branch ${name}`) });
 }
 
 test.describe("plegma window in real VS Code", () => {
@@ -112,13 +132,15 @@ test.describe("plegma window in real VS Code", () => {
     const frame = await openWindow(page);
     await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
     fs.writeFileSync(path.join(dir, "app.js"), "console.log(99);\n");
-    // The 5s fingerprint poll picks up the dirty tree.
-    await frame.getByText(/Uncommitted changes on/).waitFor({ timeout: 30000 });
+    // The 5s fingerprint poll picks up the dirty tree. Match the bar itself:
+    // the dirty commit row repeats the same words, so the text matches two.
+    const bar = frame.locator(".plegma-worktree-bar");
+    await bar.waitFor({ timeout: 30000 });
     await frame.getByRole("button", { name: "Stash changes" }).click();
     await frame.getByText(/Stashed 1 file/).waitFor({ timeout: 30000 });
     expect(git(dir, "stash", "list").length).toBeGreaterThan(0);
     expect(git(dir, "status", "--porcelain")).toBe("");
-    await frame.getByText(/Uncommitted changes on/).waitFor({ state: "detached", timeout: 30000 });
+    await bar.waitFor({ state: "detached", timeout: 30000 });
     // Restore the fixture to a clean tree for later tests.
     execFileSync("git", ["stash", "pop", "--quiet"], { cwd: dir });
     execFileSync("git", ["checkout", "--", "app.js"], { cwd: dir });
@@ -147,10 +169,10 @@ test.describe("plegma window in real VS Code", () => {
     const frame = await openWindow(page);
     await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
     // A left click only selects: no menu, and the commit shows in the panel.
-    await frame.getByText("feature", { exact: true }).click();
+    await branchChip(frame, "feature").click();
     await expect(frame.locator(".plegma-menu")).toHaveCount(0);
     // Right-click the chip: the commit's actions and the branch's, together.
-    await frame.getByText("feature", { exact: true }).click({ button: "right" });
+    await branchChip(frame, "feature").click({ button: "right" });
     await frame.getByText("Open Changes").waitFor({ timeout: 15000 });
     await frame.getByText("Copy Commit Hash").waitFor({ timeout: 15000 });
     await frame.getByText("New branch from here…").waitFor({ timeout: 15000 });
@@ -164,7 +186,7 @@ test.describe("plegma window in real VS Code", () => {
     const frame = await openWindow(page);
     await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
     expect(git(dir, "branch", "--show-current")).toBe("main");
-    await frame.getByText("feature", { exact: true }).dblclick();
+    await branchChip(frame, "feature").dblclick();
     await expect
       .poll(() => git(dir, "branch", "--show-current"), { timeout: 30000 })
       .toBe("feature");

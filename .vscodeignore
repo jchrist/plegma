@@ -2,6 +2,7 @@
 .vscode-test/**
 .agents/**
 .codex/**
+.github/**
 .vite-hooks/**
 e2e/**
 src/**
