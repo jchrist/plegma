@@ -106,6 +106,10 @@ let failNext = null;
 // this method for `ms`, so a test can inspect the view while it is busy.
 let slowNext = null;
 
+// Longer than the app's BUSY_DELAY_MS, so a settled view really is settled and
+// not merely unobserved.
+const IDLE_SETTLE_MS = 400;
+
 function respond(data) {
   switch (data.method) {
     case "log": {
@@ -1225,6 +1229,23 @@ describe("webview bundle render", () => {
       "refs/remotes/feature/*",
     ]);
     assert.deepEqual(Array.from(logArgsSeen[logArgsSeen.length - 1].refs), []);
+
+    // Clear it again. The filter is persisted to localStorage, and this
+    // pattern matches nothing in the shared fixture — every later test that
+    // counts commit rows then sees an empty history and fails, blaming itself.
+    const clearItem = await waitFor(
+      () =>
+        [...doc.querySelectorAll(".plegma-menu-item")].find(
+          (d) => (d.textContent || "").trim() === "Clear filter",
+        ),
+      "clear filter item",
+    );
+    mark = logArgsSeen.length;
+    clearItem.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    await waitFor(
+      () => logArgsSeen.slice(mark).some((a) => !a.globs || a.globs.length === 0),
+      "log re-queried with no pattern",
+    );
   });
 
   it("find mode jumps between matches instead of filtering the list", async () => {
@@ -1363,16 +1384,58 @@ describe("webview bundle render", () => {
     assert.ok(slot, "status slot rendered while idle");
     assert.match(slot.textContent || "", /commits?$/, "idle slot shows the loaded count");
     assert.equal(doc.querySelector(".plegma-spinner"), null, "no spinner while idle");
-    // The indicator waits ~120ms before appearing, so a request that comes
-    // back faster never makes the animation flicker.
+    // The indicator waits BUSY_DELAY_MS (120ms) before appearing, so a request
+    // that comes back faster never makes the animation flicker.
+    //
+    // Watch the whole window rather than sampling once partway through: an
+    // observer records whether the indicator was ever in the DOM, which is what
+    // "never flickers" means and cannot be faked by checking after the fact.
+    //
+    // Answer the request with no hold at all. Holding it even 50ms left the
+    // assertion straddling the 120ms threshold, and load() is not one request —
+    // it is six in parallel, plus a second pass when the branch filter is on
+    // its default — so on a loaded runner "fast" work still crossed 120ms.
+    //
+    // Settle first. This suite shares one jsdom across 84 tests, so requests
+    // issued by earlier tests can still be in flight when this one starts —
+    // they push busy depth on their own account and make the indicator appear
+    // for reasons that have nothing to do with the click below. Watch with no
+    // click for longer than the threshold and require that nothing shows.
+    const seenDuring = [];
+    const watch = new dom.window.MutationObserver(() => {
+      const bar = doc.querySelector(".plegma-progress");
+      const spin = doc.querySelector(".plegma-spinner");
+      if (bar || spin) seenDuring.push({ bar: !!bar, spin: !!spin });
+    });
+    watch.observe(doc.body, { childList: true, subtree: true });
+    await new Promise((r) => setTimeout(r, IDLE_SETTLE_MS));
+    assert.deepEqual(seenDuring, [], "no leftover indicator from earlier tests");
+    seenDuring.length = 0;
+
     let mark = seenRequests.length;
-    slowNext = { method: "log", ms: 50 };
+    slowNext = { method: "log", ms: 0 };
     refresh.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     await waitFor(() => seenRequests.slice(mark).includes("log"), "quick refresh sent");
-    await new Promise((r) => setTimeout(r, 80));
+    // `refresh.disabled` tracks `loading`, which Vue only re-renders on the
+    // next tick, so it is briefly still false. Wait for it to go busy first,
+    // or this passes before the work has even started.
+    await waitFor(() => refresh.disabled === true, "quick refresh started");
+    await waitFor(() => refresh.disabled === false, "quick refresh finished");
+    watch.disconnect();
+    assert.ok(
+      seenRequests.slice(mark).includes("log"),
+      "the quick refresh was actually sent",
+    );
+    assert.deepEqual(seenDuring, [], "no indicator appeared at any point during quick work");
     assert.equal(doc.querySelector(".plegma-progress"), null, "no progress bar for quick work");
     assert.equal(doc.querySelector(".plegma-spinner"), null, "no spinner for quick work");
-    await waitFor(() => refresh.disabled === false, "quick refresh finished");
+    // The label is load()'s to set and clear. If a quick load left it claimed,
+    // the slow phase below would show a bar with no text naming the work.
+    assert.equal(
+      doc.querySelector(".plegma-busy-label"),
+      null,
+      "the quick load released the busy label",
+    );
 
     // Hold the response and the same indicator shows for any action.
     mark = seenRequests.length;
@@ -2805,11 +2868,24 @@ describe("webview bundle render", () => {
       () => dom.window.localStorage.getItem("plegma.fetchOptions").includes('"ask":true'),
       "asking re-enabled",
     );
+    // Let the fetch above finish loading before asserting on the restored view.
+    // load() resolves six requests in parallel and only then sets `commits`, so
+    // a still-pending load leaves the row count at zero and "history restored"
+    // fails for a reason that has nothing to do with the Back button.
     const back = [...doc.querySelectorAll("button")].find(
       (b) => (b.textContent || "").trim() === "Back to history",
     );
     back.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    await waitFor(() => doc.querySelectorAll("tr.plegma-row").length > 0, "history restored");
+    // Generous timeout. Vue renders asynchronously after the click, and the
+    // fetch above left a load() in flight whose six parallel requests have to
+    // settle before `commits` is populated — all of that on a loaded machine.
+    // The default 5s was not always enough, and a timeout here reads as "Back
+    // to history is broken" when nothing about that button is at fault.
+    await waitFor(
+      () => doc.querySelectorAll("tr.plegma-row").length > 0,
+      "history restored",
+      20000,
+    );
     fetchBtn.dispatchEvent(
       new dom.window.MouseEvent("click", { bubbles: true, clientX: 60, clientY: 60 }),
     );
