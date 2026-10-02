@@ -587,6 +587,74 @@ class CliGitService {
     await this.run(this.repoRoot, ["push", cleanRemote, "--delete", cleanName]);
   }
 
+  // How each commit relates to HEAD, so the menu offers only the history
+  // verbs git would accept: no cherry-pick of what HEAD already has, no
+  // revert or rewrite of what it does not.
+  async commitContext(shas) {
+    this.requireRepo();
+    const list = (Array.isArray(shas) ? shas : [])
+      .map((s) => String(s == null ? "" : s).trim())
+      .filter((s) => /^[0-9a-fA-F]{4,64}$/.test(s))
+      .slice(0, 50);
+    let head = null;
+    try {
+      head = (await this.run(this.repoRoot, ["rev-parse", "--verify", "--quiet", "HEAD"])).trim();
+    } catch {
+      head = null;
+    }
+    head = head || null;
+    const commits = {};
+    for (const sha of list) {
+      commits[sha] = head
+        ? await this.relationToHead(sha)
+        : { inHead: false, applied: false, mergesSince: 0 };
+    }
+    return { head, commits };
+  }
+
+  async relationToHead(sha) {
+    const count = async (args) => {
+      try {
+        return Number((await this.run(this.repoRoot, args)).trim()) || 0;
+      } catch {
+        return 0;
+      }
+    };
+    let inHead = false;
+    try {
+      await this.run(this.repoRoot, ["merge-base", "--is-ancestor", sha, "HEAD"]);
+      inHead = true;
+    } catch {
+      inHead = false;
+    }
+    if (inHead) {
+      return {
+        inHead,
+        applied: false,
+        mergesSince: await count(["rev-list", "--count", "--merges", `${sha}..HEAD`]),
+      };
+    }
+    let applied = false;
+    try {
+      const parents = (await this.run(this.repoRoot, ["rev-list", "--parents", "-n", "1", sha]))
+        .trim()
+        .split(/\s+/)
+        .slice(1);
+      // git cherry hashes the patch of every HEAD-only commit; past this many
+      // it is too slow to run on a right-click.
+      if (
+        parents.length === 1 &&
+        (await count(["rev-list", "--count", "--no-merges", `${sha}..HEAD`])) <= 2000
+      ) {
+        const out = await this.run(this.repoRoot, ["cherry", "HEAD", sha, `${sha}^`]);
+        applied = out.split("\n").some((l) => l.startsWith("-"));
+      }
+    } catch {
+      applied = false;
+    }
+    return { inHead, applied, mergesSince: 0 };
+  }
+
   // Merge base of two revisions (native "Compare with Merge Base").
   async mergeBase(a, b) {
     this.requireRepo();
@@ -1119,9 +1187,9 @@ class CliGitService {
     return executeRewrite(this.run, this.repoRoot, spec);
   }
 
-  async rebaseOnto(upstream) {
+  async rebaseOnto(upstream, opts) {
     const { rebaseOnto } = require("./rewrite");
-    return rebaseOnto(this.run, this.repoRoot, upstream);
+    return rebaseOnto(this.run, this.repoRoot, upstream, opts);
   }
 
   async rebaseContinue() {
@@ -1144,14 +1212,14 @@ class CliGitService {
     return rebaseStatus(this.run, this.repoRoot);
   }
 
-  async mergeBranch(name) {
+  async mergeBranch(name, opts) {
     const { mergeBranch } = require("./rewrite");
-    return mergeBranch(this.run, this.repoRoot, name);
+    return mergeBranch(this.run, this.repoRoot, name, opts);
   }
 
-  async mergeCommit(sha) {
+  async mergeCommit(sha, opts) {
     const { mergeCommit } = require("./rewrite");
-    return mergeCommit(this.run, this.repoRoot, sha);
+    return mergeCommit(this.run, this.repoRoot, sha, opts);
   }
 
   async mergeStatus() {
@@ -1169,19 +1237,19 @@ class CliGitService {
     return mergeAbort(this.run, this.repoRoot);
   }
 
-  async cherryPick(sha) {
+  async cherryPick(sha, opts) {
     const { cherryPick } = require("./rewrite");
-    return cherryPick(this.run, this.repoRoot, sha);
+    return cherryPick(this.run, this.repoRoot, sha, opts);
   }
 
-  async resetTo(sha, mode) {
+  async resetTo(sha, mode, opts) {
     const { resetTo } = require("./rewrite");
-    return resetTo(this.run, this.repoRoot, sha, mode);
+    return resetTo(this.run, this.repoRoot, sha, mode, opts);
   }
 
-  async revertCommit(sha) {
+  async revertCommit(sha, opts) {
     const { revertCommit } = require("./rewrite");
-    return revertCommit(this.run, this.repoRoot, sha);
+    return revertCommit(this.run, this.repoRoot, sha, opts);
   }
 }
 

@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
+  runGit,
   CliGitService,
   createBackupRef,
   normalizeRefs,
@@ -1369,5 +1372,68 @@ describe("CliGitService pullRemoteBranch", () => {
     await assert.rejects(svc.pullRemoteBranch("-o", "feature"), /suspicious remote name/);
     await assert.rejects(svc.pullRemoteBranch("origin", "-f"), /suspicious branch/);
     await assert.rejects(svc.pullRemoteBranch("origin", ""), /suspicious branch/);
+  });
+});
+
+describe("CliGitService commitContext (real git)", () => {
+  const ex = promisify(execFile);
+
+  async function repo() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plegma-ctx-"));
+    const git = async (...args) => (await ex("git", args, { cwd: dir })).stdout.trim();
+    await git("init", "-b", "main", "--quiet");
+    await git("config", "user.email", "t@t");
+    await git("config", "user.name", "t");
+    await git("config", "commit.gpgsign", "false");
+    const commit = async (name, content, message) => {
+      await fs.writeFile(path.join(dir, name), content);
+      await git("add", name);
+      await git("commit", "-m", message, "--quiet");
+      return git("rev-parse", "HEAD");
+    };
+    return { dir, git, commit };
+  }
+
+  it("tells commits in HEAD from side commits, and counts merges since", async () => {
+    const { dir, git, commit } = await repo();
+    try {
+      const base = await commit("a.txt", "a\n", "base");
+      await git("checkout", "-b", "side", "--quiet");
+      const side = await commit("b.txt", "b\n", "side");
+      const picked = await commit("p.txt", "p\n", "picked later");
+      const fresh = await commit("q.txt", "q\n", "never picked");
+      await git("checkout", "main", "--quiet");
+      const m1 = await commit("c.txt", "c\n", "main one");
+      await git("cherry-pick", picked);
+      await git("checkout", "-b", "topic", "--quiet");
+      await commit("t.txt", "t\n", "topic");
+      await git("checkout", "main", "--quiet");
+      await git("merge", "--no-ff", "--no-edit", "topic");
+      const head = await git("rev-parse", "HEAD");
+      const svc = new CliGitService(dir, runGit);
+      const ctx = await svc.commitContext([base, m1, side, picked, fresh, "--evil", "HEAD~1"]);
+      assert.equal(ctx.head, head);
+      assert.deepEqual(Object.keys(ctx.commits).sort(), [base, m1, side, picked, fresh].sort());
+      assert.deepEqual(ctx.commits[base], { inHead: true, applied: false, mergesSince: 1 });
+      assert.deepEqual(ctx.commits[m1], { inHead: true, applied: false, mergesSince: 1 });
+      assert.deepEqual(ctx.commits[side], { inHead: false, applied: false, mergesSince: 0 });
+      assert.deepEqual(ctx.commits[picked], { inHead: false, applied: true, mergesSince: 0 });
+      assert.deepEqual(ctx.commits[fresh], { inHead: false, applied: false, mergesSince: 0 });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports no HEAD in an unborn repository", async () => {
+    const { dir } = await repo();
+    try {
+      const svc = new CliGitService(dir, runGit);
+      assert.deepEqual(await svc.commitContext(["abcdef1"]), {
+        head: null,
+        commits: { abcdef1: { inHead: false, applied: false, mergesSince: 0 } },
+      });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

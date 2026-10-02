@@ -167,8 +167,8 @@ class HybridGitService {
     return this.cli.rewrite(spec);
   }
 
-  rebaseOnto(upstream) {
-    return this.cli.rebaseOnto(upstream);
+  rebaseOnto(upstream, opts) {
+    return this.cli.rebaseOnto(upstream, opts);
   }
 
   rebaseContinue() {
@@ -187,12 +187,12 @@ class HybridGitService {
     return this.cli.rebaseStatus();
   }
 
-  mergeBranch(name) {
-    return this.cli.mergeBranch(name);
+  mergeBranch(name, opts) {
+    return this.cli.mergeBranch(name, opts);
   }
 
-  mergeCommit(sha) {
-    return this.cli.mergeCommit(sha);
+  mergeCommit(sha, opts) {
+    return this.cli.mergeCommit(sha, opts);
   }
 
   mergeStatus() {
@@ -207,16 +207,20 @@ class HybridGitService {
     return this.cli.mergeAbort();
   }
 
-  cherryPick(sha) {
-    return this.cli.cherryPick(sha);
+  cherryPick(sha, opts) {
+    return this.cli.cherryPick(sha, opts);
   }
 
-  resetTo(sha, mode) {
-    return this.cli.resetTo(sha, mode);
+  resetTo(sha, mode, opts) {
+    return this.cli.resetTo(sha, mode, opts);
   }
 
-  revertCommit(sha) {
-    return this.cli.revertCommit(sha);
+  revertCommit(sha, opts) {
+    return this.cli.revertCommit(sha, opts);
+  }
+
+  commitContext(shas) {
+    return this.cli.commitContext(shas);
   }
 
   async checkout(ref) {

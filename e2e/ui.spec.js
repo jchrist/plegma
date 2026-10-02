@@ -177,12 +177,20 @@ test.describe("plegma window in real VS Code", () => {
     await expect(frame.locator(".plegma-menu")).toHaveCount(0);
     // Right-click the chip: the commit's actions and the branch's, together.
     await branchChip(frame, "feature").click({ button: "right" });
-    // The commit's own items, then the branch's.
+    // The branch's own items lead, the commit's follow, and the branch's
+    // housekeeping is one level down, beside its parent item.
+    await frame.getByText("Push…").waitFor({ timeout: 15000 });
     await frame.getByText("Open changes").waitFor({ timeout: 15000 });
-    await frame.getByText("Copy commit hash").waitFor({ timeout: 15000 });
     await frame.getByText("Create branch…").waitFor({ timeout: 15000 });
-    await frame.getByText("Rename branch…").waitFor({ timeout: 15000 });
-    await frame.getByText("Delete branch").waitFor({ timeout: 15000 });
+    const parent = frame.locator(".plegma-menu-sub", { hasText: "Branch" });
+    await parent.hover();
+    const sub = frame.locator(".plegma-menu-submenu");
+    await sub.getByText("Rename…").waitFor({ timeout: 15000 });
+    await sub.getByText("Delete branch").waitFor({ timeout: 15000 });
+    const p = await parent.boundingBox();
+    const b = await sub.boundingBox();
+    expect(Math.abs(b.y + 7 - p.y)).toBeLessThan(2);
+    expect(Math.abs(b.x - (p.x + p.width - 4))).toBeLessThan(2);
     // Any click elsewhere dismisses it. The menu sits over the graph, so click
     // the toolbar title rather than the row underneath it — otherwise the menu
     // intercepts the click and the test asserts a dismissal that never ran.
