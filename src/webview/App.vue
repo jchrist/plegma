@@ -2122,23 +2122,23 @@ const HOVER_DELAY_MS = 250;
 const HOVER_CARD_W = 520;
 const HOVER_CARD_H = 640;
 
-// Hovering a commit's graph cell lights up its lineage immediately and
-// schedules the hover card after a short delay (like the native graph
-// hover), so the popup does not flash while scrolling through history.
-// The cell (the whole lane column, 22px tall) is the target — not the
-// 4px node circle inside it, so normal pointer jitter inside the cell
-// never cancels the pending popup. Titles, chips and meta cells
-// deliberately start no hover: lineage tracing belongs to the graph.
-function onNodeHoverEnter(e, c) {
-  hoveredHash.value = c.hash;
+// Hovering anywhere on a row schedules the hover card after a short delay
+// (like the native graph hover), so the popup does not flash while
+// scrolling through history. Only the graph cell (the whole lane column,
+// not the 4px node circle) lights up the lineage: dimming the list while
+// the pointer crosses titles read as noise, tracing belongs to the graph.
+function onRowHoverEnter(e, c) {
   if (menu.value) {
+    return;
+  }
+  if (hoverCard.value && hoverCard.value.hash === c.hash) {
+    return;
+  }
+  if (hoverTimer && hoverPending && hoverPending.hash === c.hash) {
     return;
   }
   hoverPending = { hash: c.hash, x: (e && e.clientX) || 0, y: (e && e.clientY) || 0 };
   clearHoverTimer();
-  if (hoverCard.value && hoverCard.value.hash === c.hash) {
-    return;
-  }
   hoverTimer = setTimeout(() => {
     hoverTimer = null;
     if (!hoverPending || hoverPending.hash !== c.hash) {
@@ -2167,17 +2167,20 @@ function onRowHoverLeave(e) {
   cancelHover();
 }
 
+function onNodeHoverEnter(e, c) {
+  hoveredHash.value = c.hash;
+  onRowHoverEnter(e, c);
+}
+
 // Leaving the graph cell clears the lineage, except when the pointer moves
-// onto the hover card. Moves within the cell (node to lane line and back)
-// never fire this at all — mouseleave only fires when the pointer leaves
-// the cell entirely — so jitter inside the cell cannot cancel a pending
-// popup. Reaching titles, chips or meta cells from the graph ends the hover.
+// onto the hover card. The card itself belongs to the row, so moving on to
+// the title keeps it; leaving the row (onRowHoverLeave) ends it.
 function onNodeHoverLeave(e) {
   const to = e && e.relatedTarget;
   if (to && to.closest && typeof to.closest === "function" && to.closest(".plegma-hover-card")) {
     return;
   }
-  cancelHover();
+  hoveredHash.value = null;
 }
 
 const hoverCardCommit = computed(
@@ -4259,6 +4262,7 @@ startPoll();
                   @keydown.up.prevent="(e) => focusAdjacentCommit(e, -1)"
                   @keydown.down.prevent="(e) => focusAdjacentCommit(e, 1)"
                   @contextmenu.prevent="(e) => onRowContext(e, c)"
+                  @mouseenter="(e) => onRowHoverEnter(e, c)"
                   @mousemove="(e) => onRowHoverMove(e)"
                   @mouseleave="(e) => onRowHoverLeave(e)"
                 >

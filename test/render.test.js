@@ -2588,9 +2588,9 @@ describe("webview bundle render", () => {
     const chip = row.querySelector("span.plegma-ref");
     assert.ok(chip, "ref chip rendered");
     assert.ok(chip.getAttribute("aria-label"), "chip keeps an accessible name");
-    // mouseenter does not bubble; lineage and the card start at the graph
-    // cell (the whole lane column), never at titles or chips — so hover
-    // the cell, not the 4px node circle inside it.
+    // mouseenter does not bubble; the graph cell (the whole lane column)
+    // starts both lineage and the card — hover the cell, not the 4px node
+    // circle inside it.
     const cell = row.querySelector("td.plegma-graph-cell");
     assert.ok(cell, "graph cell rendered");
     cell.dispatchEvent(
@@ -2697,40 +2697,35 @@ describe("webview bundle render", () => {
     await waitFor(() => !dom.window.document.querySelector(".plegma-hover-card"), "card closed");
   }, 30000);
 
-  it("highlights commit lineage on graph cell hover only", async () => {
+  it("opens the hover card from the whole row, lineage from the graph cell only", async () => {
     const sideRow = commitRows().find((r) => (r.textContent || "").includes("side: experiment"));
     assert.ok(sideRow, "side-branch row rendered");
     const cell = sideRow.querySelector("td.plegma-graph-cell");
     assert.ok(cell, "graph cell rendered");
-    // Titles, chips, lane lines and the row itself start no hover: the
-    // lineage stays flat and no card is scheduled, even after the 250ms
-    // hover delay elapses.
     const title = sideRow.querySelector(".plegma-subject");
     assert.ok(title, "subject title rendered");
-    title.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
-    const lane = sideRow.querySelector("td.plegma-graph-cell path");
-    assert.ok(lane, "lane line rendered");
-    lane.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
-    const chipRow = commitRows().find((r) => r.querySelector("span.plegma-ref"));
-    assert.ok(chipRow, "row with a ref chip rendered");
-    chipRow
-      .querySelector("span.plegma-ref")
-      .dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
-    sideRow.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
+    // Anywhere on the row (title, chips, meta) opens the card after the
+    // hover delay, but the lineage stays flat: dimming belongs to the graph.
+    sideRow.dispatchEvent(
+      new dom.window.MouseEvent("mouseenter", { bubbles: false, clientX: 300, clientY: 30 }),
+    );
+    assert.ok(
+      !dom.window.document.querySelector(".plegma-hover-card"),
+      "no card before the hover delay",
+    );
+    const rowCard = await waitFor(
+      () => dom.window.document.querySelector(".plegma-hover-card"),
+      "hover card from the row",
+    );
+    assert.ok((rowCard.textContent || "").includes("side: experiment"), "card for the hovered row");
     assert.ok(
       commitRows().every((r) => !r.style.opacity),
-      "no lineage from title, lane, chip or row",
+      "no lineage from the row outside the graph cell",
     );
-    assert.ok(
-      !dom.window.document.querySelector(".plegma-hover-card"),
-      "no immediate card from title, lane, chip or row",
-    );
-    await new Promise((r) => setTimeout(r, 400));
-    assert.ok(
-      !dom.window.document.querySelector(".plegma-hover-card"),
-      "no delayed card from title, lane, chip or row either",
-    );
+    sideRow.dispatchEvent(new dom.window.MouseEvent("mouseleave", { bubbles: false }));
+    await waitFor(() => !dom.window.document.querySelector(".plegma-hover-card"), "card closed");
     // The graph cell lights up its lineage immediately.
+    sideRow.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
     cell.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
     await waitFor(() => {
       const rows = commitRows();
@@ -2742,6 +2737,8 @@ describe("webview bundle render", () => {
     // of their own, so moving across them fires no leave on the cell.
     const innerNode = cell.querySelector("circle");
     assert.ok(innerNode, "commit node rendered");
+    const lane = cell.querySelector("path");
+    assert.ok(lane, "lane line rendered");
     innerNode.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
     lane.dispatchEvent(new dom.window.MouseEvent("mouseenter", { bubbles: false }));
     const card = await waitFor(
@@ -2749,10 +2746,15 @@ describe("webview bundle render", () => {
       "hover card survives jitter inside the cell",
     );
     assert.ok(card, "hover card opens from the graph cell");
-    card.dispatchEvent(new dom.window.MouseEvent("mouseleave", { bubbles: false }));
-    await waitFor(() => !dom.window.document.querySelector(".plegma-hover-card"), "card closed");
-    cell.dispatchEvent(new dom.window.MouseEvent("mouseleave", { bubbles: false }));
+    // Moving from the graph on to the title clears the lineage but keeps
+    // the card: it belongs to the row.
+    cell.dispatchEvent(
+      new dom.window.MouseEvent("mouseleave", { bubbles: false, relatedTarget: title }),
+    );
     await waitFor(() => commitRows().every((r) => !r.style.opacity), "highlight cleared");
+    assert.ok(dom.window.document.querySelector(".plegma-hover-card"), "card stays on the row");
+    sideRow.dispatchEvent(new dom.window.MouseEvent("mouseleave", { bubbles: false }));
+    await waitFor(() => !dom.window.document.querySelector(".plegma-hover-card"), "card closed");
   }, 60000);
 
   it("loads more commits on demand and on scroll", async () => {
