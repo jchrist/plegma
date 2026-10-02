@@ -53,8 +53,7 @@ replacement.
 - **Backups before rewrites.** Every history rewrite writes a
   `refs/plegma-backup/<branch>-<timestamp>` ref first and requires a clean
   tree. Do not add a rewrite path that skips this.
-- **Destructive verbs confirm first.** The message names both ends of what it
-  does (`Fetch origin/x into x`, `Delete x from origin`).
+- **Destructive verbs confirm first.**
 - **Offer only what git would accept.** Menus check the current repo state and
   disable rather than offering an action that fails.
 - **Stash and backup refs stay out of the graph.** `--exclude=refs/stash` and

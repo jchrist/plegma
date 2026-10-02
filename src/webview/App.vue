@@ -5029,17 +5029,17 @@ startPoll();
           would silently apply to one commit of the set, so they are absent.
         -->
         <div class="plegma-menu-item" @click="doRewrite('squash', menuMulti, '')">
-          Squash {{ menuMulti.length }} selected into the oldest
+          Squash into oldest
         </div>
         <div class="plegma-menu-item" @click="doRewrite('drop', menuMulti, '')">
-          Drop {{ menuMulti.length }} selected
+          Drop
         </div>
         <div class="plegma-menu-sep"></div>
         <div class="plegma-menu-item" @click="copyHashes(menuMulti)">
-          Copy {{ menuMulti.length }} Commit Hashes
+          Copy hashes
         </div>
         <div class="plegma-menu-item" @click="copyMessages(menuMulti)">
-          Copy {{ menuMulti.length }} Commit Messages
+          Copy messages
         </div>
       </template>
 
@@ -5059,13 +5059,13 @@ startPoll();
             @mouseenter="onPlainItem"
             @click="doUpdateBranch(menuChip.name)"
           >
-            <template v-if="menuChipIsHead">Pull latest into {{ menuChip.name }}</template>
-            <template v-else>Update {{ menuChip.name }} from {{ menuChipUpstream }}</template>
+            <template v-if="menuChipIsHead">Pull from {{ menuChipUpstream }}</template>
+            <template v-else>Fetch from {{ menuChipUpstream }}</template>
           </div>
           <div class="plegma-menu-sep"></div>
         </template>
         <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="openChangesFromMenu()">
-          Open Changes
+          Open changes
         </div>
         <div
           v-if="!menuAtHead"
@@ -5073,7 +5073,7 @@ startPoll();
           @mouseenter="onPlainItem"
           @click="checkoutDetachedFromMenu()"
         >
-          Checkout (Detached)
+          Checkout (detached)
         </div>
         <div
           v-if="menuCheckoutTargets.length > 0"
@@ -5113,7 +5113,7 @@ startPoll();
           @mouseenter="onPlainItem"
           @click="doRewrite('squash', menuTargets, '')"
         >
-          Squash {{ menuTargets.length }} selected here
+          Squash {{ menuTargets.length }} selected
         </div>
         <div
           v-if="menuTargets.length > 0"
@@ -5123,26 +5123,6 @@ startPoll();
         >
           Drop {{ menuTargets.length > 1 ? `${menuTargets.length} selected` : "this commit" }}
         </div>
-        <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="revertFromMenu()">
-          Revert this commit
-        </div>
-        <div
-          v-if="!menuAtHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="doResetAsk()"
-        >
-          Reset current branch to here…
-        </div>
-        <div
-          v-if="!menuAtHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="mergeCommitFromMenu()"
-        >
-          Merge into current branch…
-        </div>
-        <div class="plegma-menu-sep"></div>
         <div
           class="plegma-menu-item"
           @mouseenter="onPlainItem"
@@ -5154,14 +5134,33 @@ startPoll();
             )
           "
         >
-          Create Branch…
+          Create branch…
         </div>
         <div
           class="plegma-menu-item"
           @mouseenter="onPlainItem"
           @click="doCreateTag(menu.hash, shortHash(menu.hash))"
         >
-          Create Tag…
+          Create tag…
+        </div>
+        <div
+          class="plegma-menu-item plegma-menu-sub"
+          @mouseenter="openSubmenu($event, 'compare')"
+          @click.stop="toggleSubmenu($event, 'compare')"
+        >
+          Compare with <span class="plegma-menu-arrow">▸</span>
+        </div>
+
+        <!--
+          Everything that changes the checked-out branch, under one header
+          that names it, so the items themselves need not repeat it.
+        -->
+        <div class="plegma-menu-sep"></div>
+        <div class="plegma-menu-header plegma-menu-section">
+          {{ headBranch ? `On branch ${headBranch.name}` : "HEAD detached" }}
+        </div>
+        <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="revertFromMenu()">
+          Revert this commit
         </div>
         <div
           v-if="!menuAtHead"
@@ -5169,14 +5168,33 @@ startPoll();
           @mouseenter="onPlainItem"
           @click="cherryPickFromMenu()"
         >
-          Cherry Pick
+          Cherry-pick this commit
+        </div>
+        <!-- On a branch chip the branch merge below is the same commit with a
+             better merge message, so the commit merge would only duplicate it. -->
+        <div
+          v-if="!menuAtHead && !(menuChip && headBranch)"
+          class="plegma-menu-item"
+          @mouseenter="onPlainItem"
+          @click="mergeCommitFromMenu()"
+        >
+          Merge this commit…
         </div>
         <div
-          class="plegma-menu-item plegma-menu-sub"
-          @mouseenter="openSubmenu($event, 'compare')"
-          @click.stop="toggleSubmenu($event, 'compare')"
+          v-if="menuChip && menuChip.kind === 'local' && headBranch && !menuChipIsHead"
+          class="plegma-menu-item"
+          @mouseenter="onPlainItem"
+          @click="mergeFromBranchMenu()"
         >
-          Compare with… <span class="plegma-menu-arrow">▸</span>
+          Merge branch
+        </div>
+        <div
+          v-if="menuChipRemote && headBranch && !menuChipIsHead"
+          class="plegma-menu-item"
+          @mouseenter="onPlainItem"
+          @click="doPullRemoteBranch()"
+        >
+          Pull {{ menuChipRemoteName }}
         </div>
         <div
           v-if="menuRebaseTargets.length > 0 || !menuAtHead"
@@ -5184,35 +5202,33 @@ startPoll();
           @mouseenter="openSubmenu($event, 'rebase')"
           @click.stop="toggleSubmenu($event, 'rebase')"
         >
-          Rebase {{ headBranch ? headBranch.name : "current branch" }} onto…
-          <span class="plegma-menu-arrow">▸</span>
+          Rebase onto <span class="plegma-menu-arrow">▸</span>
+        </div>
+        <div
+          v-if="!menuAtHead"
+          class="plegma-menu-item"
+          @mouseenter="onPlainItem"
+          @click="doResetAsk()"
+        >
+          Reset to this commit…
         </div>
 
         <template v-if="menuChip">
           <div class="plegma-menu-sep"></div>
           <!--
-            The branch's own actions. Every label names both ends of what
-            it does ("Fetch origin/x into x", "Merge origin/x into main"),
-            because "fetch into…" alone does not say what moves where.
+            The branch's own actions; the chip header names the branch.
             What the commit's own items already cover — checking the branch
             out, rebasing onto it, branching from it — is not repeated.
             Update lives at the top of the menu instead of here.
           -->
-          <div
-            v-if="menuChip.kind === 'local' && headBranch && !menuChipIsHead"
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="mergeFromBranchMenu()"
-          >
-            Merge {{ menuChip.name }} into {{ headBranch.name }}
-          </div>
           <div
             v-if="menuChip.kind === 'local'"
             class="plegma-menu-item"
             @mouseenter="onPlainItem"
             @click="pushFromBranchMenu(false)"
           >
-            Push {{ menuChip.name }} to {{ menuChipUpstream || "its remote" }}
+            <template v-if="menuChipUpstream">Push to {{ menuChipUpstream }}</template>
+            <template v-else>Push…</template>
           </div>
           <div
             v-if="menuChip.kind === 'local' && menuChipUpstream"
@@ -5220,15 +5236,7 @@ startPoll();
             @mouseenter="onPlainItem"
             @click="pushFromBranchMenu(true)"
           >
-            Force Push {{ menuChip.name }}…
-          </div>
-          <div
-            v-if="menuChip.kind === 'local' && !menuChipIsHead"
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="doDeleteBranch(menuChip.name)"
-          >
-            Delete {{ menuChip.name }}<template v-if="menuChipWorktree"> and its worktree</template>
+            Force push…
           </div>
           <div
             v-if="menuChip.kind === 'local'"
@@ -5236,7 +5244,7 @@ startPoll();
             @mouseenter="onPlainItem"
             @click="doRenameBranch(menuChip.name)"
           >
-            Rename {{ menuChip.name }}…
+            Rename branch…
           </div>
           <div
             v-else
@@ -5244,19 +5252,17 @@ startPoll();
             @mouseenter="onPlainItem"
             @click="checkoutTrackingFromBranchMenu()"
           >
-            Check out {{ menuChipRemoteName }} as new local branch
-            {{ menuChipLocalName }}
+            Checkout as {{ menuChipLocalName }}
+          </div>
+          <div
+            v-if="menuChip.kind === 'local' && !menuChipIsHead"
+            class="plegma-menu-item"
+            @mouseenter="onPlainItem"
+            @click="doDeleteBranch(menuChip.name)"
+          >
+            Delete branch<template v-if="menuChipWorktree"> and worktree</template>
           </div>
           <template v-if="menuChipRemote">
-            <div class="plegma-menu-sep"></div>
-            <div
-              v-if="headBranch && !menuChipIsHead"
-              class="plegma-menu-item"
-              @mouseenter="onPlainItem"
-              @click="doPullRemoteBranch()"
-            >
-              Merge {{ menuChipRemoteName }} into {{ headBranch.name }}
-            </div>
             <!-- Kept only where Update cannot go (a local branch with no
                  live upstream, or a remote-only chip): there it is the
                  only in-place fast-forward. -->
@@ -5266,14 +5272,14 @@ startPoll();
               @mouseenter="onPlainItem"
               @click="doFetchRemoteBranch()"
             >
-              Fetch {{ menuChipRemoteName }} into {{ menuChipLocalName }}
+              Fetch from {{ menuChipRemoteName }}
             </div>
             <div
               class="plegma-menu-item"
               @mouseenter="onPlainItem"
               @click="askDeleteRemoteFromBranchMenu()"
             >
-              Delete {{ menuChipRemote.short }} from {{ menuChipRemote.remote }}
+              Delete from {{ menuChipRemote.remote }}
             </div>
           </template>
           <div
@@ -5287,10 +5293,10 @@ startPoll();
 
         <div class="plegma-menu-sep"></div>
         <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="copyHash(menu.hash)">
-          Copy Commit Hash
+          Copy commit hash
         </div>
         <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="copyCommitMessage()">
-          Copy Commit Message
+          Copy commit message
         </div>
       </template>
     </div>
@@ -5338,7 +5344,7 @@ startPoll();
           {{ b.name }}
         </div>
         <div v-if="!menuAtHead" class="plegma-menu-item" @click="doRebaseOnto(menu.hash)">
-          This commit ({{ shortHash(menu.hash) }})
+          This commit
         </div>
       </template>
       <template v-else-if="submenu.key === 'compare'">
@@ -5354,7 +5360,7 @@ startPoll();
         </div>
         <div class="plegma-menu-item" @click="compareRefFromMenu()">Another ref…</div>
         <div class="plegma-menu-item" @click="compareWorktreeFromMenu()">
-          Working tree vs. this commit
+          Working tree
         </div>
       </template>
     </div>
@@ -5405,9 +5411,9 @@ startPoll();
         <span v-html="rich(tagMenuTag.message, { newlines: true })"></span>
       </div>
       <div class="plegma-menu-item" @click="checkoutTagFromMenu()">
-        Check out {{ tagMenu.name }} (detached)
+        Checkout (detached)
       </div>
-      <div class="plegma-menu-item" @click="pushTagFromMenu()">Push Tag…</div>
+      <div class="plegma-menu-item" @click="pushTagFromMenu()">Push…</div>
       <div
         class="plegma-menu-item"
         @click="
@@ -5415,7 +5421,7 @@ startPoll();
           tagMenu = null;
         "
       >
-        Copy tag name
+        Copy name
       </div>
       <div
         class="plegma-menu-item"
@@ -5424,7 +5430,7 @@ startPoll();
           tagMenu = null;
         "
       >
-        Delete Tag…
+        Delete…
       </div>
     </div>
 

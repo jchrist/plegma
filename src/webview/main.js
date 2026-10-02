@@ -79,6 +79,7 @@ const CSS = [
   // Header of a menu opened on a ref chip: the chip it belongs to, plus the
   // remote half when the chip stands for two refs.
   ".plegma-menu-chipheader{display:flex;align-items:center;gap:4px;padding-bottom:0}",
+  ".plegma-menu-section{padding-top:2px;padding-bottom:2px}",
   ".plegma-menu-chipicon{flex:none}",
   ".plegma-menu-chipremote{opacity:.7}",
   ".plegma-menu-worktree{padding:0 12px 6px;opacity:.7;font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis}",

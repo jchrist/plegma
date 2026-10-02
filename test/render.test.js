@@ -526,18 +526,19 @@ describe("webview bundle render", () => {
     );
     const items = await waitFor(() => {
       const found = menuItems();
-      return found.includes("Delete feature from origin") ? found : null;
+      return found.includes("Delete from origin") ? found : null;
     }, "paired chip menu");
     for (const item of [
-      "Push feature to origin/feature", // local
-      "Force Push feature…", // local (has an upstream)
-      "Delete feature from origin", // remote half of the pair
-      "Merge origin/feature into main",
+      "Push to origin/feature", // local
+      "Force push…", // local (has an upstream)
+      "Delete from origin", // remote half of the pair
+      "Pull origin/feature",
     ]) {
       assert.ok(items.includes(item), `paired chip menu has "${item}"`);
     }
-    assert.ok(
-      !items.some((t) => t.startsWith("Fetch origin/")),
+    assert.equal(
+      items.filter((t) => t.startsWith("Fetch from")).length,
+      1,
       "no separate fetch item: Update (first) owns the fast-forward",
     );
     assert.ok(
@@ -599,25 +600,28 @@ describe("webview bundle render", () => {
     // contains these static labels, so body text matches vacuously.
     const items = menuItems();
     for (const item of [
-      "Update feature from origin/feature",
-      "Merge feature into main",
-      "Push feature to origin/feature",
-      "Force Push feature…",
-      "Delete feature and its worktree",
+      "Fetch from origin/feature",
+      "Merge branch",
+      "Push to origin/feature",
+      "Force push…",
+      "Delete branch and worktree",
       "Copy branch name",
-      "Rename feature…",
+      "Rename branch…",
     ]) {
       assert.ok(items.includes(item), `branch menu has "${item}"`);
     }
-    // Every label names both ends of what it does, so it can be read
-    // without a glossary: nothing says "fetch into…" and leaves the rest
-    // to be guessed.
+    // The chip header names the branch and the section header the
+    // checked-out one, so no item repeats either name.
     for (const item of items) {
       assert.ok(
-        !/^(Fetch|Pull|Update|Push) into\b/.test(item) && !item.endsWith(" into "),
-        `item "${item}" leaves its target unstated`,
+        !/(^|\s)(feature|main)(\s|…|$)/.test(item),
+        `item "${item}" repeats a branch name its header already shows`,
       );
     }
+    const headers = [...dom.window.document.querySelectorAll(".plegma-menu-header")].map((d) =>
+      (d.textContent || "").trim(),
+    );
+    assert.ok(headers.includes("On branch main"), "the checked-out branch is named once");
   });
 
   it("offers pull (not check-out-and-back) for the current branch", async () => {
@@ -628,14 +632,14 @@ describe("webview bundle render", () => {
     head.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    await waitFor(() => menuItems().includes("Pull latest into main"), "current-branch menu");
+    await waitFor(() => menuItems().includes("Pull from origin/main"), "current-branch menu");
     assert.ok(
-      !menuItems().some((t) => t.startsWith("Update main")),
-      "no check-out-and-back wording for the branch I'm already on",
+      !menuItems().some((t) => t.startsWith("Fetch from")),
+      "no in-place fetch wording for the branch I'm already on",
     );
     // The checked-out branch keeps the pull flow (not the in-place fetch).
     const mark = seenRequests.length;
-    findMenuItem("Pull latest into main").dispatchEvent(
+    findMenuItem("Pull from origin/main").dispatchEvent(
       new dom.window.MouseEvent("click", { bubbles: true }),
     );
     await waitFor(() => seenRequests.slice(mark).includes("log"), "history reloaded (pull)");
@@ -645,7 +649,7 @@ describe("webview bundle render", () => {
       "no in-place fetch for the checked-out branch",
     );
     await waitFor(
-      () => !menuItems().includes("Pull latest into main"),
+      () => !menuItems().includes("Pull from origin/main"),
       "current-branch menu dismissed",
     );
   });
@@ -736,7 +740,7 @@ describe("webview bundle render", () => {
     // The comparisons are grouped, like the native graph groups its own.
     await openSubmenuByText("Compare with");
     const item = await waitFor(
-      () => findMenuItem("Working tree vs. this commit"),
+      () => findMenuItem("Working tree"),
       "compare worktree item",
     );
     const mark = seenRequests.length;
@@ -754,7 +758,7 @@ describe("webview bundle render", () => {
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
     const item = await waitFor(
-      () => findMenuItem("Merge origin/feature into main"),
+      () => findMenuItem("Pull origin/feature"),
       "merge remote branch item",
     );
     const mark = seenRequests.length;
@@ -772,8 +776,8 @@ describe("webview bundle render", () => {
     // the in-place fast-forward and no fetch item duplicates it — including
     // on the checked-out branch.
     for (const [name, update] of [
-      ["origin/feature", "Update feature from origin/feature"],
-      ["origin/main", "Pull latest into main"],
+      ["origin/feature", "Fetch from origin/feature"],
+      ["origin/main", "Pull from origin/main"],
     ]) {
       const chip = refChip(name);
       assert.ok(chip, `${name} chip rendered`);
@@ -781,8 +785,9 @@ describe("webview bundle render", () => {
         new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
       );
       await waitFor(() => menuItems().includes(update), `update covers ${name}`);
-      assert.ok(
-        !menuItems().some((t) => t.startsWith("Fetch origin/")),
+      assert.equal(
+        menuItems().filter((t) => t.startsWith("Fetch from") || t.startsWith("Pull from")).length,
+        1,
         `no separate fetch item beside ${update}`,
       );
       dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
@@ -799,21 +804,21 @@ describe("webview bundle render", () => {
     base.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    await waitFor(() => menuItems().includes("Copy Commit Hash"), "commit menu");
+    await waitFor(() => menuItems().includes("Copy commit hash"), "commit menu");
     for (const item of [
-      "Open Changes",
-      "Checkout (Detached)",
+      "Open changes",
+      "Checkout (detached)",
       "Checkout ▸",
-      "Create Branch…",
-      "Create Tag…",
-      "Cherry Pick",
-      "Compare with… ▸",
-      "Rebase main onto… ▸",
+      "Create branch…",
+      "Create tag…",
+      "Cherry-pick this commit",
+      "Compare with ▸",
+      "Rebase onto ▸",
       "Revert this commit",
-      "Reset current branch to here…",
-      "Merge into current branch…",
-      "Copy Commit Hash",
-      "Copy Commit Message",
+      "Reset to this commit…",
+      "Merge this commit…",
+      "Copy commit hash",
+      "Copy commit message",
     ]) {
       assert.ok(menuItems().includes(item), `commit menu has "${item}"`);
     }
@@ -848,7 +853,7 @@ describe("webview bundle render", () => {
       "submenu closed by parent scroll",
     );
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
-    await waitFor(() => !menuItems().includes("Copy Commit Hash"), "menu closed by Escape");
+    await waitFor(() => !menuItems().includes("Copy commit hash"), "menu closed by Escape");
   });
 
   it("hides the actions that would be no-ops on the branch tip", async () => {
@@ -857,12 +862,12 @@ describe("webview bundle render", () => {
     tip.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    await waitFor(() => menuItems().includes("Copy Commit Hash"), "commit menu");
+    await waitFor(() => menuItems().includes("Copy commit hash"), "commit menu");
     for (const item of [
-      "Checkout (Detached)",
-      "Reset current branch to here…",
-      "Merge into current branch…",
-      "Cherry Pick",
+      "Checkout (detached)",
+      "Reset to this commit…",
+      "Merge this commit…",
+      "Cherry-pick this commit",
     ]) {
       assert.ok(
         !menuItems().includes(item),
@@ -870,10 +875,10 @@ describe("webview bundle render", () => {
       );
     }
     // What is left still acts on it.
-    assert.ok(menuItems().includes("Open Changes"));
+    assert.ok(menuItems().includes("Open changes"));
     assert.ok(menuItems().includes("Drop this commit"));
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
-    await waitFor(() => !menuItems().includes("Copy Commit Hash"), "menu dismissed");
+    await waitFor(() => !menuItems().includes("Copy commit hash"), "menu dismissed");
   });
 
   it("offers only set-wide actions when several commits are selected", async () => {
@@ -893,27 +898,27 @@ describe("webview bundle render", () => {
     base.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    await waitFor(() => menuItems().includes("Squash 2 selected into the oldest"), "multi menu");
+    await waitFor(() => menuItems().includes("Squash into oldest"), "multi menu");
     for (const item of [
-      "Squash 2 selected into the oldest",
-      "Drop 2 selected",
-      "Copy 2 Commit Hashes",
-      "Copy 2 Commit Messages",
+      "Squash into oldest",
+      "Drop",
+      "Copy hashes",
+      "Copy messages",
     ]) {
       assert.ok(menuItems().includes(item), `multi menu has "${item}"`);
     }
     for (const item of [
-      "Open Changes",
+      "Open changes",
       "Revert this commit",
-      "Reset current branch to here…",
-      "Cherry Pick",
-      "Checkout (Detached)",
-      "Rebase main onto… ▸",
+      "Reset to this commit…",
+      "Cherry-pick this commit",
+      "Checkout (detached)",
+      "Rebase onto ▸",
     ]) {
       assert.ok(!menuItems().includes(item), `multi menu drops "${item}"`);
     }
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
-    await waitFor(() => !menuItems().includes("Drop 2 selected"), "multi menu dismissed");
+    await waitFor(() => !menuItems().includes("Drop"), "multi menu dismissed");
     // Leave a single selection behind: a two-commit selection would turn
     // every later right-click into a multi menu.
     side.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -925,7 +930,7 @@ describe("webview bundle render", () => {
     chip.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    const item = await waitFor(() => findMenuItem("Create Branch…"), "create branch item");
+    const item = await waitFor(() => findMenuItem("Create branch…"), "create branch item");
     const mark = seenRequests.length;
     item.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     const asked = await waitFor(
@@ -944,15 +949,15 @@ describe("webview bundle render", () => {
     tag.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 60, clientY: 60 }),
     );
-    await waitFor(() => rootText().includes("Delete Tag"), "tag menu");
-    for (const item of ["(detached)", "Push Tag", "Copy tag name", "Delete Tag"]) {
-      assert.ok(rootText().includes(item), `tag menu has "${item}"`);
+    await waitFor(() => menuItems().includes("Copy name"), "tag menu");
+    for (const item of ["Checkout (detached)", "Push…", "Copy name", "Delete…"]) {
+      assert.ok(menuItems().includes(item), `tag menu has "${item}"`);
     }
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(
       () =>
         ![...dom.window.document.querySelectorAll(".plegma-menu-item")].some((d) =>
-          (d.textContent || "").includes("Delete Tag"),
+          (d.textContent || "").trim() === "Delete…",
         ),
       "tag menu closed by Escape",
     );
@@ -965,7 +970,7 @@ describe("webview bundle render", () => {
     base.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    const item = await waitFor(() => findMenuItem("Checkout (Detached)"), "detached checkout item");
+    const item = await waitFor(() => findMenuItem("Checkout (detached)"), "detached checkout item");
     const mark = seenRequests.length;
     item.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     await waitFor(
@@ -985,21 +990,21 @@ describe("webview bundle render", () => {
     // The full remote name leads: the menu is about origin/next, and there
     // is no local "next" to confuse it with.
     const item = await waitFor(
-      () => findMenuItem("Check out origin/next as new local branch next"),
+      () => findMenuItem("Checkout as next"),
       "remote branch menu",
     );
     assert.ok(item, "tracking checkout leads with the remote name");
     assert.ok(
-      menuItems().includes("Merge origin/next into main"),
+      menuItems().includes("Pull origin/next"),
       "merge names the remote in full",
     );
     // There is no local "next" to fetch into, so the fetch is not offered
     // at all — it would silently create that branch.
     assert.ok(
-      !menuItems().some((t) => t.startsWith("Fetch origin/next")),
+      !menuItems().some((t) => t.startsWith("Fetch from")),
       "no fetch into a branch that does not exist",
     );
-    const del = await waitFor(() => findMenuItem("Delete next from origin"), "remote delete item");
+    const del = await waitFor(() => findMenuItem("Delete from origin"), "remote delete item");
     del.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     await waitFor(() => rootText().includes("removes it from the remote"), "remote delete confirm");
     const confirm = [...dom.window.document.querySelectorAll("#root button")].find(
@@ -1022,7 +1027,7 @@ describe("webview bundle render", () => {
     chip.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    const item = await waitFor(() => findMenuItem("Push feature to origin/feature"), "branch menu");
+    const item = await waitFor(() => findMenuItem("Push to origin/feature"), "branch menu");
     assert.ok(item, "plain push item rendered (no confirm)");
     const mark = seenRequests.length;
     item.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -1040,7 +1045,7 @@ describe("webview bundle render", () => {
     const item = await waitFor(
       () =>
         [...dom.window.document.querySelectorAll(".plegma-menu-item")].find((d) =>
-          (d.textContent || "").includes("Force Push"),
+          (d.textContent || "").includes("Force push"),
         ),
       "force push item",
     );
@@ -1068,7 +1073,7 @@ describe("webview bundle render", () => {
     const item = await waitFor(
       () =>
         [...dom.window.document.querySelectorAll(".plegma-menu-item")].find((d) =>
-          (d.textContent || "").includes("Push Tag"),
+          (d.textContent || "").trim() === "Push…",
         ),
       "push tag item",
     );
@@ -1089,7 +1094,7 @@ describe("webview bundle render", () => {
       chip.dispatchEvent(
         new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 60, clientY: 60 }),
       );
-      await waitFor(() => rootText().includes("Delete Tag"), "tag menu");
+      await waitFor(() => menuItems().includes("Copy name"), "tag menu");
     };
     await openMenu("v0.1");
     const menu = doc.querySelector(".plegma-menu");
@@ -1119,9 +1124,9 @@ describe("webview bundle render", () => {
     tag.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 60, clientY: 60 }),
     );
-    await waitFor(() => rootText().includes("Delete Tag"), "tag menu");
+    await waitFor(() => menuItems().includes("Copy name"), "tag menu");
     const del = [...dom.window.document.querySelectorAll(".plegma-menu-item")].find((d) =>
-      (d.textContent || "").includes("Delete Tag"),
+      (d.textContent || "").trim() === "Delete…",
     );
     assert.ok(del, "tag delete item rendered");
     del.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -1145,7 +1150,7 @@ describe("webview bundle render", () => {
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
     const item = await waitFor(
-      () => findMenuItem("Merge into current branch…"),
+      () => findMenuItem("Merge this commit…"),
       "merge commit item",
     );
     const mark = seenRequests.length;
@@ -1163,9 +1168,9 @@ describe("webview bundle render", () => {
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
     // The rebase targets are grouped, and the commit itself is one of them.
-    await openSubmenuByText("Rebase main onto");
+    await openSubmenuByText("Rebase onto");
     const item = await waitFor(
-      () => findMenuItem("This commit (bbb222)"),
+      () => findMenuItem("This commit"),
       "rebase-onto-commit item",
     );
     const mark = seenRequests.length;
@@ -2088,7 +2093,7 @@ describe("webview bundle render", () => {
       chip.dispatchEvent(
         new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
       );
-      const item = await waitFor(() => findMenuItem("Merge feature into main"), "merge menu item");
+      const item = await waitFor(() => findMenuItem("Merge branch"), "merge menu item");
       assert.ok(item, "merge menu item rendered");
       item.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
       await waitFor(() => {
@@ -2122,7 +2127,7 @@ describe("webview bundle render", () => {
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
     const item = await waitFor(
-      () => findMenuItem("Update feature from origin/feature"),
+      () => findMenuItem("Fetch from origin/feature"),
       "branch menu update",
     );
     item.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -2159,12 +2164,12 @@ describe("webview bundle render", () => {
     // There is nothing to pull, so the action is not offered at all — not
     // offered and greyed, which was the old shape.
     assert.ok(
-      !menuItems().some((t) => t.includes("Update lonely")),
+      !menuItems().some((t) => t.startsWith("Fetch from") || t.startsWith("Pull from")),
       "no Update item for a branch with no upstream",
     );
     assert.ok(!bodyText().includes("nothing to pull"), "no explanation row either");
     // The actions that do work are still there.
-    assert.ok(menuItems().includes("Push lonely to its remote"));
+    assert.ok(menuItems().includes("Push…"));
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => !dom.window.document.querySelector(".plegma-menu"), "menu dismissed");
   });
@@ -2181,12 +2186,12 @@ describe("webview bundle render", () => {
     );
     await waitFor(() => menuItems().includes("Copy branch name"), "stale branch menu");
     assert.ok(
-      !menuItems().some((t) => t.includes("Update stale") || t.includes("Pull latest")),
+      !menuItems().some((t) => t.startsWith("Fetch from") || t.startsWith("Pull from")),
       "no Update item for a branch with a gone upstream",
     );
     // The actions that do work are still there.
-    assert.ok(menuItems().includes("Push stale to origin/stale"));
-    assert.ok(menuItems().includes("Delete stale"));
+    assert.ok(menuItems().includes("Push to origin/stale"));
+    assert.ok(menuItems().includes("Delete branch"));
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => !dom.window.document.querySelector(".plegma-menu"), "menu dismissed");
   });
@@ -2198,13 +2203,13 @@ describe("webview bundle render", () => {
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
     await waitFor(
-      () => menuItems().includes("Update feature from origin/feature"),
+      () => menuItems().includes("Fetch from origin/feature"),
       "branch menu update",
     );
     const items = [...dom.window.document.querySelectorAll(".plegma-menu .plegma-menu-item")].map(
       (d) => (d.textContent || "").trim(),
     );
-    assert.equal(items[0], "Update feature from origin/feature", "update is the first menu item");
+    assert.equal(items[0], "Fetch from origin/feature", "update is the first menu item");
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => !dom.window.document.querySelector(".plegma-menu"), "menu dismissed");
     // Same for the checked-out branch, with its own wording.
@@ -2215,11 +2220,11 @@ describe("webview bundle render", () => {
     head.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 50 }),
     );
-    await waitFor(() => menuItems().includes("Pull latest into main"), "head branch menu");
+    await waitFor(() => menuItems().includes("Pull from origin/main"), "head branch menu");
     const headItems = [
       ...dom.window.document.querySelectorAll(".plegma-menu .plegma-menu-item"),
     ].map((d) => (d.textContent || "").trim());
-    assert.equal(headItems[0], "Pull latest into main", "pull leads the head menu");
+    assert.equal(headItems[0], "Pull from origin/main", "pull leads the head menu");
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => !dom.window.document.querySelector(".plegma-menu"), "menu dismissed");
   });
@@ -2267,8 +2272,8 @@ describe("webview bundle render", () => {
     base.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 50, clientY: 60 }),
     );
-    await waitFor(() => bodyText().includes("Copy Commit Hash"), "commit menu");
-    const item = findMenuItem("Reset current branch to here…");
+    await waitFor(() => bodyText().includes("Copy commit hash"), "commit menu");
+    const item = findMenuItem("Reset to this commit…");
     assert.ok(item, "reset menu item rendered");
     item.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     // No native picker: the confirm opens straight away with the default
@@ -2331,7 +2336,7 @@ describe("webview bundle render", () => {
     row.dispatchEvent(
       new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 60, clientY: 60 }),
     );
-    await waitFor(() => menuItems().includes("Copy Commit Hash"), "commit menu");
+    await waitFor(() => menuItems().includes("Copy commit hash"), "commit menu");
     const commitItems = menuItems();
     dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => !dom.window.document.querySelector(".plegma-menu"), "menu dismissed");
@@ -2342,36 +2347,42 @@ describe("webview bundle render", () => {
     );
     await waitFor(() => menuItems().includes("Copy branch name"), "chip menu");
     const chipItems = menuItems();
-    for (const item of commitItems) {
+    // Merging the branch merges this same commit, so the chip offers
+    // only the branch merge.
+    assert.ok(commitItems.includes("Merge this commit…"), "the row menu merges the commit");
+    assert.ok(!chipItems.includes("Merge this commit…"), "the chip menu does not repeat it");
+    const sharedItems = commitItems.filter((i) => i !== "Merge this commit…");
+    for (const item of sharedItems) {
       assert.ok(chipItems.includes(item), `the chip menu keeps "${item}"`);
     }
     // Update leads the chip menu; the commit's actions follow in the same
     // order as the row menu.
     assert.equal(
       chipItems[0],
-      "Update feature from origin/feature",
+      "Fetch from origin/feature",
       "update is the first chip menu item",
     );
     assert.deepEqual(
-      chipItems.slice(1).filter((i) => commitItems.includes(i)),
-      commitItems,
+      chipItems.slice(1).filter((i) => sharedItems.includes(i)),
+      sharedItems,
       "the commit's actions follow, in the same order",
     );
     for (const item of [
-      "Update feature from origin/feature",
-      "Merge feature into main",
-      "Push feature to origin/feature",
-      "Force Push feature…",
-      "Delete feature and its worktree",
-      "Rename feature…",
-      "Merge origin/feature into main",
-      "Delete feature from origin",
+      "Fetch from origin/feature",
+      "Merge branch",
+      "Push to origin/feature",
+      "Force push…",
+      "Delete branch and worktree",
+      "Rename branch…",
+      "Pull origin/feature",
+      "Delete from origin",
       "Copy branch name",
     ]) {
       assert.ok(chipItems.includes(item), `the chip menu adds "${item}"`);
     }
-    assert.ok(
-      !chipItems.some((i) => i.startsWith("Fetch origin/")),
+    assert.equal(
+      chipItems.filter((i) => i.startsWith("Fetch from")).length,
+      1,
       "no separate fetch item: Update owns the fast-forward",
     );
     // And nothing is offered twice: what the commit's own items already
@@ -2388,7 +2399,7 @@ describe("webview bundle render", () => {
       !chipItems.includes("Check out"),
       "no bare Check out: the commit's own Checkout list covers it",
     );
-    assert.ok(!chipItems.includes("New branch from here…"), "no duplicate of Create Branch…");
+    assert.ok(!chipItems.includes("New branch from here…"), "no duplicate of Create branch…");
     // Both menus name the commit they act on, above the chip they came from.
     const headerText = [...dom.window.document.querySelectorAll(".plegma-menu-header")]
       .map((d) => d.textContent || "")

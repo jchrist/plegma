@@ -155,7 +155,7 @@ test.describe("plegma window in real VS Code", () => {
     const frame = await openWindow(page);
     await frame.getByText("feat: initial app", { exact: true }).waitFor({ timeout: 30000 });
     await frame.getByText("feat: initial app", { exact: true }).click({ button: "right" });
-    await frame.getByText("Create Branch…").click();
+    await frame.getByText("Create branch…").click();
     // showInputBox appears in the main window, not the webview frame.
     await page.waitForSelector(".quick-input-widget", { timeout: 20000 });
     await page.keyboard.type("e2e-ui-branch");
@@ -177,13 +177,12 @@ test.describe("plegma window in real VS Code", () => {
     await expect(frame.locator(".plegma-menu")).toHaveCount(0);
     // Right-click the chip: the commit's actions and the branch's, together.
     await branchChip(frame, "feature").click({ button: "right" });
-    // The commit's own items, then the branch's. Labels name their target
-    // ("Rename feature…", "Delete feature") so both sets are unambiguous.
-    await frame.getByText("Open Changes").waitFor({ timeout: 15000 });
-    await frame.getByText("Copy Commit Hash").waitFor({ timeout: 15000 });
-    await frame.getByText("Create Branch…").waitFor({ timeout: 15000 });
-    await frame.getByText("Rename feature…").waitFor({ timeout: 15000 });
-    await frame.getByText("Delete feature").waitFor({ timeout: 15000 });
+    // The commit's own items, then the branch's.
+    await frame.getByText("Open changes").waitFor({ timeout: 15000 });
+    await frame.getByText("Copy commit hash").waitFor({ timeout: 15000 });
+    await frame.getByText("Create branch…").waitFor({ timeout: 15000 });
+    await frame.getByText("Rename branch…").waitFor({ timeout: 15000 });
+    await frame.getByText("Delete branch").waitFor({ timeout: 15000 });
     // Any click elsewhere dismisses it. The menu sits over the graph, so click
     // the toolbar title rather than the row underneath it — otherwise the menu
     // intercepts the click and the test asserts a dismissal that never ran.
