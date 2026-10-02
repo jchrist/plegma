@@ -656,7 +656,7 @@ describe("rewrite flows with stubbed git (fast)", () => {
     const res = await rebaseOnto(run, "/repo", "main");
     assert.equal(res.rebased, true);
     assert.match(res.backupRef, /^refs\/plegma-backup\/main-\d+$/);
-    assert.ok(calls.includes("status --porcelain"));
+    assert.ok(calls.includes("status --porcelain --untracked-files=no"));
     assert.ok(calls.includes("rebase main"));
     await assert.rejects(rebaseOnto(run, "/repo", "  "), /needs a target/);
   });
@@ -693,5 +693,155 @@ describe("rewrite flows with stubbed git (fast)", () => {
     assert.deepEqual(await rebaseSkip(run, "/repo"), { skipped: true });
     assert.deepEqual(calls, ["rebase --continue", "rebase --skip"]);
     await assert.rejects(rebaseContinue(run, undefined), /No git repository/);
+  });
+});
+
+describe("dirty working trees (real git)", () => {
+  let dir;
+
+  async function git(...args) {
+    return ex("git", args, { cwd: dir });
+  }
+
+  async function commitFile(name, content, message) {
+    await fs.writeFile(path.join(dir, name), content);
+    await git("add", name);
+    await git("commit", "-m", message, "--quiet");
+    const { stdout } = await git("rev-parse", "HEAD");
+    return stdout.trim();
+  }
+
+  async function read(name) {
+    return fs.readFile(path.join(dir, name), "utf8");
+  }
+
+  async function stashCount() {
+    const { stdout } = await git("stash", "list");
+    return stdout.split("\n").filter(Boolean).length;
+  }
+
+  // main: base(a.txt, d.txt) - m1 ; side (from base): s1(b.txt)
+  async function repoWithSide() {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "plegma-dirty-"));
+    await git("init", "-b", "main", "--quiet");
+    await git("config", "user.email", "t@t");
+    await git("config", "user.name", "t");
+    await git("config", "commit.gpgsign", "false");
+    await commitFile("a.txt", "a\n", "base");
+    await commitFile("d.txt", "d\n", "dirty target");
+    await git("checkout", "-b", "side", "--quiet");
+    const s1 = await commitFile("b.txt", "b\n", "side one");
+    await git("checkout", "main", "--quiet");
+    const m1 = await commitFile("c.txt", "c\n", "main one");
+    return { s1, m1 };
+  }
+
+  async function dirty() {
+    await fs.writeFile(path.join(dir, "d.txt"), "local edit\n");
+  }
+
+  afterEach(async () => {
+    if (dir) {
+      await fs.rm(dir, { recursive: true, force: true });
+      dir = undefined;
+    }
+  });
+
+  it("does not let untracked files block history verbs", async () => {
+    const { s1 } = await repoWithSide();
+    await fs.writeFile(path.join(dir, "junk.txt"), "untracked\n");
+    assert.equal((await cherryPick(runGit, dir, s1)).picked, true);
+    assert.equal((await rebaseOnto(runGit, dir, "side")).rebased, true);
+    assert.equal(await read("junk.txt"), "untracked\n");
+  });
+
+  it("still refuses tracked changes without autostash", async () => {
+    const { s1 } = await repoWithSide();
+    await dirty();
+    await assert.rejects(cherryPick(runGit, dir, s1), /not clean/);
+    await assert.rejects(rebaseOnto(runGit, dir, "side"), /not clean/);
+  });
+
+  it("rebases with autostash and keeps the local edit", async () => {
+    await repoWithSide();
+    await dirty();
+    const res = await rebaseOnto(runGit, dir, "side", { autostash: true });
+    assert.equal(res.rebased, true);
+    assert.match(res.backupRef, /^refs\/plegma-backup\//);
+    assert.equal(await read("b.txt"), "b\n");
+    assert.equal(await read("d.txt"), "local edit\n");
+    assert.equal(await stashCount(), 0);
+  });
+
+  it("rewrites with autostash and keeps the local edit", async () => {
+    const { m1 } = await repoWithSide();
+    await dirty();
+    const res = await executeRewrite(runGit, dir, { drop: [m1], autostash: true });
+    assert.equal(res.rewritten, true);
+    await assert.rejects(fs.stat(path.join(dir, "c.txt")));
+    assert.equal(await read("d.txt"), "local edit\n");
+    assert.equal(await stashCount(), 0);
+  });
+
+  it("merges with autostash and keeps the local edit", async () => {
+    await repoWithSide();
+    await dirty();
+    const res = await mergeBranch(runGit, dir, "side", { autostash: true });
+    assert.equal(res.merged, true);
+    assert.equal(await read("b.txt"), "b\n");
+    assert.equal(await read("d.txt"), "local edit\n");
+    assert.equal(await stashCount(), 0);
+  });
+
+  it("cherry-picks with autostash and keeps the local edit", async () => {
+    const { s1 } = await repoWithSide();
+    await dirty();
+    const res = await cherryPick(runGit, dir, s1, { autostash: true });
+    assert.equal(res.picked, true);
+    assert.equal(await read("b.txt"), "b\n");
+    assert.equal(await read("d.txt"), "local edit\n");
+    assert.equal(await stashCount(), 0);
+  });
+
+  it("reverts with autostash and keeps the local edit", async () => {
+    const { m1 } = await repoWithSide();
+    await dirty();
+    const res = await revertCommit(runGit, dir, m1, { autostash: true });
+    assert.equal(res.reverted, true);
+    await assert.rejects(fs.stat(path.join(dir, "c.txt")));
+    assert.equal(await read("d.txt"), "local edit\n");
+    assert.equal(await stashCount(), 0);
+  });
+
+  it("restores the stash when an autostashed cherry-pick conflicts", async () => {
+    await repoWithSide();
+    await git("checkout", "side", "--quiet");
+    const clash = await commitFile("c.txt", "theirs\n", "side clash");
+    await git("checkout", "main", "--quiet");
+    await dirty();
+    const err = await cherryPick(runGit, dir, clash, { autostash: true }).then(
+      () => null,
+      (e) => e,
+    );
+    assert.ok(err, "expected a conflict error");
+    assert.equal(err.conflict, true);
+    assert.deepEqual(err.conflictedFiles, ["c.txt"]);
+    assert.equal(await read("d.txt"), "local edit\n");
+    assert.equal(await stashCount(), 0);
+  });
+
+  it("stashes instead of discarding on an autostashed hard reset", async () => {
+    await repoWithSide();
+    await dirty();
+    const res = await resetTo(runGit, dir, "HEAD~1", "hard", { autostash: true });
+    assert.equal(res.reset, true);
+    assert.equal(res.stashed, true);
+    const { stdout: status } = await git("status", "--porcelain");
+    assert.equal(status.trim(), "");
+    assert.equal(await stashCount(), 1);
+    const { stdout: list } = await git("stash", "list");
+    assert.match(list, /plegma: before reset to/);
+    await git("stash", "pop");
+    assert.equal(await read("d.txt"), "local edit\n");
   });
 });

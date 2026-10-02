@@ -365,6 +365,7 @@ describe("HybridGitService CLI-only passthroughs", () => {
     assert.deepEqual((await svc.revertCommit("bbb")).reverted, true);
     assert.deepEqual((await svc.rewrite({ drop: ["bbb"] })).rewritten, true);
     assert.deepEqual((await svc.rebaseOnto("main")).rebased, true);
+    assert.deepEqual(await svc.commitContext(["zz"]), { head: null, commits: {} });
     assert.deepEqual(await svc.rebaseContinue(), { continued: true });
     assert.deepEqual(await svc.rebaseSkip(), { skipped: true });
     assert.deepEqual(await svc.rebaseAbort(), { aborted: true });

@@ -246,10 +246,16 @@ const checked = ref([]);
 const anchor = ref(null);
 // One context menu for a commit, whether the right-click landed on the row
 // or on one of its ref chips. `menu.chip` is set only in the second case,
-// and adds the branch's own actions to the commit's. `submenu` is the one
-// nested list that may be open inside it.
+// and leads the menu with the branch's own actions. `submenu` is the one
+// nested list that may be open inside it. `menuCtx` is git's view of the
+// menu's commits ({ head, commits: { sha: { inHead, applied, mergesSince } } }),
+// null while it is still being asked.
 const menu = ref(null);
 const submenu = ref(null);
+const menuCtx = ref(null);
+// Asks before an action git would refuse over uncommitted changes, offering
+// to stash them around it: { verb, run, x, y }.
+const stashGate = ref(null);
 const tagMenu = ref(null);
 const revertTarget = ref(null);
 const resetTarget = ref(null);
@@ -1638,7 +1644,7 @@ async function refreshConflictState() {
   }
 }
 
-async function doRewrite(kind, explicitList, explicitMessage) {
+async function doRewrite(kind, explicitList, explicitMessage, autostash) {
   const list = explicitList || orderedChecked.value;
   const message = explicitMessage !== undefined ? explicitMessage : "";
   let args = {};
@@ -1663,6 +1669,12 @@ async function doRewrite(kind, explicitList, explicitMessage) {
     }
     args = { reword: { hash: list[0], message: message.trim() } };
   }
+  if (autostash === undefined) {
+    const at = rewordFor.value ? rewordPos.value : null;
+    rewordFor.value = null;
+    return gateOnChanges(kind, (a) => doRewrite(kind, list, message, a), at);
+  }
+  args.autostash = autostash;
   opBusy.value = true;
   opStatus.value = null;
   menu.value = null;
@@ -1681,16 +1693,20 @@ async function doRewrite(kind, explicitList, explicitMessage) {
   }
 }
 
-async function doRebaseOnto(upstream) {
+async function doRebaseOnto(upstream, autostash) {
   if (!upstream || !upstream.trim() || !headBranch.value) {
     return;
   }
   upstream = upstream.trim();
+  if (autostash === undefined) {
+    return gateOnChanges("rebase", (a) => doRebaseOnto(upstream, a));
+  }
   menu.value = null;
+  submenu.value = null;
   opBusy.value = true;
   opStatus.value = null;
   try {
-    await requestVia("rebase", { upstream });
+    await requestVia("rebase", { upstream, autostash });
     await load();
     await syncFingerprint();
   } catch (e) {
@@ -2332,35 +2348,128 @@ function focusAdjacentCommit(e, direction) {
 }
 
 // Right-click opens the one menu a commit has. `chip` is set when the
-// right-click landed on a ref badge, which appends that branch's own
-// actions to the commit's — the same commit, the same menu, either way.
-// The reserved height matches the menu's CSS max-height, so a long menu
-// scrolls instead of running off the bottom of the window.
-const MENU_MAX_H = 600;
-function onRowContext(e, c, chip) {
+// right-click landed on a ref badge, which leads the menu with that
+// branch's own actions. The menu waits briefly for git's view of the
+// commit (is it already in HEAD, is its patch already there), so items
+// git would refuse never flash in and out; a slow answer opens the menu
+// anyway and the gated items join it when the answer lands.
+const MENU_CONTEXT_WAIT_MS = 250;
+let menuSeq = 0;
+async function onRowContext(e, c, chip) {
   cancelHover();
   worktreeSelected.value = false;
   selected.value = c.hash;
   tagMenu.value = null;
   submenu.value = null;
-  const at = clampXY(e.clientX, e.clientY, 260, MENU_MAX_H);
-  menu.value = { ...at, hash: c.hash, chip: chip || null };
+  const seq = ++menuSeq;
+  const shas =
+    checked.value.length > 1 && checked.value.includes(c.hash)
+      ? [...orderedChecked.value]
+      : [c.hash];
+  menuCtx.value = null;
+  const asked = requestVia("commitContext", { shas })
+    .then((data) => data || {})
+    // Without an answer the menu falls back to what it can see, and git
+    // has the last word as it always did.
+    .catch(() => ({}))
+    .then((data) => {
+      if (seq === menuSeq) {
+        menuCtx.value = {
+          head: data.head !== undefined ? data.head : (headBranch.value || {}).target || null,
+          commits: data.commits || {},
+        };
+      }
+    });
+  await Promise.race([asked, new Promise((r) => setTimeout(r, MENU_CONTEXT_WAIT_MS))]);
+  if (seq !== menuSeq) {
+    return;
+  }
+  menu.value = {
+    x: e.clientX,
+    y: e.clientY,
+    ax: e.clientX,
+    ay: e.clientY,
+    hash: c.hash,
+    chip: chip || null,
+  };
 }
 
+// Popups are placed from their real rendered size, not a guessed one: a
+// guess as tall as the menu's max-height pushed every nested list in a
+// short window far above its parent. A popup that does not fit flips to
+// the other side of its anchor instead of sliding away from it.
+const menuEl = ref(null);
+const submenuEl = ref(null);
+function viewport() {
+  return {
+    vw: typeof window !== "undefined" && window.innerWidth ? window.innerWidth : 1024,
+    vh: typeof window !== "undefined" && window.innerHeight ? window.innerHeight : 768,
+  };
+}
+function fitMenu() {
+  const m = menu.value;
+  const el = menuEl.value;
+  if (!m || !el || !el.offsetWidth) {
+    return;
+  }
+  const { vw, vh } = viewport();
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const x = m.ax + w > vw ? Math.max(0, m.ax - w) : m.ax;
+  let y = m.ay;
+  if (y + h > vh) {
+    y = m.ay - h >= 0 ? m.ay - h : Math.max(0, vh - h);
+  }
+  m.x = x;
+  m.y = y;
+}
+// The nested list lines its first item up with its parent item and
+// overlaps it by a few pixels, so the pointer never crosses a gap.
+const SUBMENU_OVERLAP = 4;
+const MENU_PAD = 7; // the menu's top padding plus its border
+function fitSubmenu() {
+  const s = submenu.value;
+  const el = submenuEl.value;
+  if (!s || !el || !el.offsetWidth) {
+    return;
+  }
+  const { vw, vh } = viewport();
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const r = s.parent;
+  let x = r.right - SUBMENU_OVERLAP;
+  if (x + w > vw) {
+    x = Math.max(0, r.left - w + SUBMENU_OVERLAP);
+  }
+  let y = r.top - MENU_PAD;
+  if (y + h > vh) {
+    y = Math.max(0, Math.min(r.bottom + MENU_PAD - h, vh - h));
+  }
+  s.x = x;
+  s.y = y;
+}
+watch([menu, menuCtx], async () => {
+  await nextTick();
+  fitMenu();
+});
+watch(submenu, async () => {
+  await nextTick();
+  fitSubmenu();
+});
+
 // One nested menu at a time, opened by hovering (or clicking) a parent
-// item — the way the native graph nests its checkout list. It sits a few
-// pixels to the right of its parent, overlapping it so the pointer never
-// crosses a gap, and closes when either half is left, when any other item
-// is entered, when the parent menu scrolls, or when the menu itself goes
-// away. The scroll case matters: the nested list is viewport-positioned,
-// so left open it would drift away from its parent row as the menu moves.
+// item — the way the native graph nests its checkout list. It closes when
+// either half is left, when any other item is entered, when the parent
+// menu scrolls, or when the menu itself goes away. The scroll case
+// matters: the nested list is viewport-positioned, so left open it would
+// drift away from its parent row as the menu moves.
 function openSubmenu(e, key) {
   const rect = e.currentTarget && e.currentTarget.getBoundingClientRect();
   if (!rect) {
     return;
   }
-  const at = clampXY(rect.right - 6, rect.top - 6, 280, MENU_MAX_H);
-  submenu.value = { key, ...at };
+  const parent = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  submenu.value = { key, parent, x: parent.right - SUBMENU_OVERLAP, y: parent.top - MENU_PAD };
 }
 function toggleSubmenu(e, key) {
   if (submenu.value && submenu.value.key === key) {
@@ -2383,6 +2492,7 @@ watch(menu, (m) => {
 });
 
 function onTagContext(e, name) {
+  menuSeq++;
   menu.value = null;
   const at = clampXY(e.clientX, e.clientY, 250, 200);
   tagMenu.value = { ...at, name };
@@ -2416,8 +2526,9 @@ watch(
     remoteDeleteTarget,
     stashDropTarget,
     discardTarget,
+    stashGate,
   ],
-  ([m, tm, fd, r, rt, dt, dtt, drt, pft, fm, bfo, cmo, rdt, sdt, dd]) => {
+  ([m, tm, fd, r, rt, dt, dtt, drt, pft, fm, bfo, cmo, rdt, sdt, dd, sg]) => {
     if (
       !m &&
       !tm &&
@@ -2433,7 +2544,8 @@ watch(
       !cmo &&
       !rdt &&
       !sdt &&
-      !dd
+      !dd &&
+      !sg
     ) {
       return;
     }
@@ -2446,6 +2558,7 @@ watch(
 
 function closeOverlays() {
   cancelHover();
+  menuSeq++;
   menu.value = null;
   submenu.value = null;
   tagMenu.value = null;
@@ -2463,6 +2576,7 @@ function closeOverlays() {
   remoteDeleteTarget.value = null;
   stashDropTarget.value = null;
   discardTarget.value = null;
+  stashGate.value = null;
 }
 
 // Keyboard shortcuts. Ctrl+H jumps to HEAD, Ctrl+R reloads the log.
@@ -2733,28 +2847,53 @@ async function doRenameBranch(oldName) {
   await runOp(`Rename branch ${oldName}`, "renameBranch", { oldName, newName: newName.trim() });
 }
 
-function checkoutFromBranchMenu() {
-  const name = menuChip.value && menuChip.value.name;
+// Tracked changes only: git refuses on its own to overwrite an untracked
+// file, so untracked files never need stashing first.
+const trackedChanges = computed(
+  () => worktree.value.filter((f) => f.status !== "Untracked").length,
+);
+
+// Runs `run(autostash)` straight away on a clean tree. With tracked
+// changes, which git would refuse the action over, it asks first and
+// offers to stash them around the action instead of failing.
+function gateOnChanges(verb, run, at) {
+  if (!trackedChanges.value) {
+    return run(false);
+  }
+  const m = menu.value;
+  const raw = at || (m ? { x: m.x, y: m.y } : { x: 200, y: 200 });
   menu.value = null;
-  if (name) {
-    doCheckout(name);
+  stashGate.value = { verb, run, ...clampXY(raw.x, raw.y, 340, 130) };
+}
+
+function confirmStashGate() {
+  const g = stashGate.value;
+  stashGate.value = null;
+  if (g) {
+    g.run(true);
   }
 }
 
 function cherryPickFromMenu() {
   const hash = menu.value && menu.value.hash;
-  menu.value = null;
-  if (hash) {
-    runOp(`Cherry-pick ${shortHash(hash)}`, "cherryPick", { sha: hash });
+  if (!hash) {
+    return;
   }
+  gateOnChanges("cherry-pick", (autostash) => {
+    menu.value = null;
+    return runOp(`Cherry-pick ${shortHash(hash)}`, "cherryPick", { sha: hash, autostash });
+  });
 }
 
 function revertFromMenu() {
   const hash = menu.value && menu.value.hash;
-  menu.value = null;
-  if (hash) {
-    runOp(`Revert ${shortHash(hash)}`, "revertCommit", { sha: hash });
+  if (!hash) {
+    return;
   }
+  gateOnChanges("revert", (autostash) => {
+    menu.value = null;
+    return runOp(`Revert ${shortHash(hash)}`, "revertCommit", { sha: hash, autostash });
+  });
 }
 
 async function doResetAsk() {
@@ -2769,16 +2908,25 @@ async function doResetAsk() {
   resetTarget.value = { sha: hash, mode: resetDefaultMode.value, ...at };
 }
 
+// A hard reset over tracked changes stashes them rather than refusing:
+// the stash entry keeps them recoverable, which a plain discard would not.
 async function doResetTo() {
   const t = resetTarget.value;
   if (!t) {
     return;
   }
   resetTarget.value = null;
+  const autostash = t.mode === "hard" && trackedChanges.value > 0;
   opBusy.value = true;
   opStatus.value = null;
   try {
-    await requestVia("resetTo", { sha: t.sha, mode: t.mode });
+    const data = await requestVia("resetTo", { sha: t.sha, mode: t.mode, autostash });
+    if (data && data.stashed) {
+      opStatus.value = {
+        text: "Your uncommitted changes were stashed before the hard reset.",
+        isError: false,
+      };
+    }
     await load();
     await syncFingerprint();
   } catch (e) {
@@ -2793,7 +2941,6 @@ async function doResetTo() {
 
 function rebaseFromBranchMenu() {
   const name = menuChip.value && menuChip.value.name;
-  menu.value = null;
   if (name) {
     doRebaseOnto(name);
   }
@@ -2801,7 +2948,6 @@ function rebaseFromBranchMenu() {
 
 function mergeFromBranchMenu() {
   const name = menuChip.value && menuChip.value.name;
-  menu.value = null;
   if (name) {
     doMergeBranch(name);
   }
@@ -2809,40 +2955,37 @@ function mergeFromBranchMenu() {
 
 function mergeCommitFromMenu() {
   const hash = menu.value && menu.value.hash;
-  menu.value = null;
   if (hash) {
     doMergeCommit(hash);
   }
 }
 
-async function doMergeCommit(sha) {
+function doMergeCommit(sha, autostash) {
   if (!sha) {
     return;
   }
-  opBusy.value = true;
-  opStatus.value = null;
-  try {
-    await requestVia("mergeCommit", { sha });
-    await load();
-    await syncFingerprint();
-  } catch (e) {
-    opStatus.value = { text: `Merge failed: ${(e && e.message) || e}`, isError: true };
-    await load();
-    await syncFingerprint();
-  } finally {
-    opBusy.value = false;
-    refreshConflictState();
+  if (autostash === undefined) {
+    return gateOnChanges("merge", (a) => doMergeCommit(sha, a));
   }
+  return runMerge("mergeCommit", { sha, autostash });
 }
 
-async function doMergeBranch(name) {
+function doMergeBranch(name, autostash) {
   if (!name) {
     return;
   }
+  if (autostash === undefined) {
+    return gateOnChanges("merge", (a) => doMergeBranch(name, a));
+  }
+  return runMerge("mergeBranch", { name, autostash });
+}
+
+async function runMerge(method, args) {
+  menu.value = null;
   opBusy.value = true;
   opStatus.value = null;
   try {
-    await requestVia("mergeBranch", { name });
+    await requestVia(method, args);
     await load();
     await syncFingerprint();
   } catch (e) {
@@ -2875,8 +3018,7 @@ async function doMergeCmd(cmd, label) {
 // through updateBranch; any other branch fast-forwards in place with
 // `fetch <remote> <branch>:<local>` instead of switching branches around
 // it — same outcome, working tree untouched.
-async function doUpdateBranch(name) {
-  const upstream = menuChipUpstream.value;
+async function doUpdateBranch(name, upstream) {
   const wasCurrent = !!headBranch.value && headBranch.value.name === name;
   menu.value = null;
   const slash = (upstream || "").indexOf("/");
@@ -2923,11 +3065,6 @@ const menuTargets = computed(() =>
       ? orderedChecked.value
       : [menu.value.hash]
     : [],
-);
-// The commit is the tip of the checked-out branch: nothing to check out
-// detached, nothing to reset to, nothing to rebase onto, nothing to merge.
-const menuAtHead = computed(
-  () => !!(headBranch.value && headBranch.value.target === (menu.value && menu.value.hash)),
 );
 // What "Checkout" can offer: the local branches and tags pointing at this
 // commit, minus the ones git would refuse — the branch already checked out
@@ -2988,16 +3125,6 @@ function splitRemoteName(name) {
   }
   return { remote: name.slice(0, slash), short: name.slice(slash + 1) };
 }
-// The remote-tracking ref a chip speaks about: the remote folded into a
-// paired chip, or a remote-only chip's own name. "Fetch <this> into <local>"
-// needs the two apart — a paired chip's own name is the local one.
-const menuChipRemoteName = computed(() => {
-  const chip = menuChip.value;
-  if (!chip) {
-    return "";
-  }
-  return chip.paired ? chip.remote.name : chip.name;
-});
 // The local branch a remote action lands in.
 const menuChipLocalName = computed(() => {
   const chip = menuChip.value;
@@ -3009,7 +3136,7 @@ const menuChipLocalName = computed(() => {
     : (menuChipRemote.value && menuChipRemote.value.short) || chip.name;
 });
 // The branch this local chip tracks, when it tracks one. The menu names it
-// in every label that touches the network ("Update x from origin/x"), so a
+// in every label that touches the network ("Update from origin/x"), so a
 // reader never has to look up what an action will push to or pull from.
 const menuChipUpstream = computed(() =>
   menuChip.value && menuChip.value.kind === "local" && menuChipBranch.value
@@ -3027,9 +3154,7 @@ const menuChipUpstreamBranch = computed(() => {
   }
   return branches.value.find((b) => b.kind !== "local" && b.name === up) || null;
 });
-// Update is offered for a local branch tracking a live remote ref. Where
-// it is offered, the separate fetch item would duplicate it, so the fetch
-// item only remains where Update cannot go.
+// Pull/Update is offered for a local branch tracking a live remote ref.
 const menuChipUpdateOffered = computed(
   () => !!(menuChip.value && menuChip.value.kind === "local" && menuChipUpstreamBranch.value),
 );
@@ -3048,20 +3173,6 @@ const menuChipRemote = computed(() => {
   }
   return splitRemoteName(chip.name);
 });
-// Whether "Fetch <remote> into <local>" may be offered: the same-named
-// local branch must exist (otherwise the fetch would silently create it)
-// and must not be checked out (git refuses that fetch).
-const menuChipFetchAllowed = computed(() => {
-  if (!menuChipRemote.value) {
-    return false;
-  }
-  const local =
-    branches.value.find((b) => b.kind === "local" && b.name === menuChipLocalName.value) || null;
-  if (!local) {
-    return false;
-  }
-  return !(headBranch.value && headBranch.value.name === local.name);
-});
 // Is the menu chip the branch this repository has checked out? Rebase/merge
 // onto it, deleting it and checking it out are all no-ops or refusals then.
 const menuChipIsHead = computed(() => {
@@ -3073,6 +3184,331 @@ const menuChipIsHead = computed(() => {
     headBranch.value.name === chip.name
   );
 });
+
+function commitOf(hash) {
+  return commits.value.find((c) => c.hash === hash) || null;
+}
+
+// What git would accept for the menu's commit, from git's own answer:
+// nothing that moves HEAD while a merge or rebase is stopped, nothing
+// already in HEAD to merge, pick or rebase onto, nothing outside it to
+// revert or rewrite. A commit git said nothing about keeps its actions,
+// and git has the last word.
+const menuCan = computed(() => {
+  const m = menu.value;
+  const c = menuCommit.value;
+  const ctx = menuCtx.value;
+  if (!m || !c || !ctx || rebaseState.value.inProgress || mergeState.value.inProgress) {
+    return {};
+  }
+  const head = ctx.head;
+  const isHead = !!head && head === m.hash;
+  const rel = ctx.commits[m.hash];
+  const inHead = rel ? rel.inHead : null;
+  // A merge commit needs a mainline (-m) to pick or revert, which the
+  // menu does not ask for.
+  const plain = c.parents.length <= 1;
+  const rewritable = (hash) => {
+    const cc = hash === c.hash ? c : commitOf(hash);
+    const r = ctx.commits[hash];
+    return !!cc && cc.parents.length === 1 && (!r || (r.inHead && r.mergesSince === 0));
+  };
+  return {
+    checkoutDetached: !isHead,
+    cherryPick: !!head && !isHead && inHead !== true && plain && !(rel && rel.applied),
+    revert: !!head && inHead !== false && plain,
+    merge: !!head && !isHead && inHead !== true,
+    rebase: !!headBranch.value && !isHead && inHead !== true,
+    reset: !!head && !isHead,
+    rewrite: !!head && rewritable(m.hash),
+    rewriteAll: !!head && menuTargets.value.every(rewritable),
+  };
+});
+
+// The local branch a remote-only chip stands for, when one exists.
+const menuChipLocal = computed(() => {
+  const chip = menuChip.value;
+  if (!chip || chip.kind === "local" || !menuChipRemote.value) {
+    return null;
+  }
+  const short = menuChipRemote.value.short;
+  return branches.value.find((b) => b.kind === "local" && b.name === short) || null;
+});
+
+// What a branch chip is right-clicked for, most likely first: getting the
+// branch (checkout), bringing it up to date (pull or update), sharing it
+// (push). A remote-only chip checks out as its local branch, or updates
+// that branch when it already exists. Detached checkout is not here at
+// all: on a branch it is almost never what is meant.
+const menuChipItems = computed(() => {
+  const chip = menuChip.value;
+  if (!chip) {
+    return [];
+  }
+  const head = headBranch.value;
+  const items = [];
+  if (chip.kind === "local") {
+    if (!menuChipIsHead.value && !menuChipWorktree.value) {
+      items.push({ label: "Checkout", run: () => doCheckout(chip.name) });
+    }
+    if (menuChipUpdateOffered.value) {
+      const up = menuChipUpstream.value;
+      items.push({
+        label: menuChipIsHead.value ? `Pull from ${up}` : `Update from ${up}`,
+        run: () => doUpdateBranch(chip.name, up),
+      });
+    }
+    items.push({
+      label: menuChipUpstream.value ? `Push to ${menuChipUpstream.value}` : "Push…",
+      run: () => pushFromBranchMenu(false),
+    });
+    return items;
+  }
+  const local = menuChipLocal.value;
+  if (!local) {
+    items.push({
+      label: `Checkout as ${menuChipLocalName.value}`,
+      run: checkoutTrackingFromBranchMenu,
+    });
+  } else if (head && head.name === local.name) {
+    items.push({
+      label: `Pull into ${local.name}`,
+      run: () =>
+        local.upstream === chip.name
+          ? doUpdateBranch(local.name, local.upstream)
+          : doPullRemoteBranch(),
+    });
+  } else {
+    if (!worktreeByBranch.value.has(local.name)) {
+      items.push({ label: `Checkout ${local.name}`, run: () => doCheckout(local.name) });
+    }
+    items.push({ label: `Update ${local.name}`, run: doFetchRemoteBranch });
+  }
+  return items;
+});
+
+// The commit menu as data: groups in order of relevance, a separator
+// between each non-empty one, rarely used actions folded into nested
+// lists. On a branch chip the branch's own actions lead; on a row the
+// commit's do.
+const menuGroups = computed(() => {
+  const m = menu.value;
+  const c = menuCommit.value;
+  if (!m || !c) {
+    return [];
+  }
+  const can = menuCan.value;
+  const groups = [];
+  const multi = menuMulti.value;
+  if (multi) {
+    // Single-commit actions would silently apply to one commit of the
+    // set, so only what works on the whole selection is offered.
+    if (can.rewriteAll) {
+      groups.push({
+        items: [
+          { label: "Squash into oldest", run: () => doRewrite("squash", multi, "") },
+          { label: "Drop", run: () => doRewrite("drop", multi, "") },
+        ],
+      });
+    }
+    groups.push({
+      items: [
+        { label: "Copy hashes", run: () => copyHashes(multi) },
+        { label: "Copy messages", run: () => copyMessages(multi) },
+      ],
+    });
+    return groups;
+  }
+  const chip = menuChip.value;
+  const openChanges = { label: "Open changes", run: openChangesFromMenu };
+  const compare = { label: "Compare with", sub: "compare" };
+  groups.push({
+    items: chip
+      ? menuChipItems.value
+      : [
+          openChanges,
+          ...(menuCheckoutTargets.value.length ? [{ label: "Checkout", sub: "checkout" }] : []),
+          compare,
+        ],
+  });
+  // Everything that changes the checked-out branch, under one header that
+  // names it.
+  const onHead = [];
+  if (chip && can.merge) {
+    onHead.push({ label: "Merge branch", run: mergeFromBranchMenu });
+  }
+  if (chip && can.rebase) {
+    onHead.push({ label: "Rebase onto branch", run: rebaseFromBranchMenu });
+  }
+  if (can.cherryPick) {
+    onHead.push({ label: "Cherry-pick this commit", run: cherryPickFromMenu });
+  }
+  if (can.revert) {
+    onHead.push({ label: "Revert this commit", run: revertFromMenu });
+  }
+  if (!chip && can.merge) {
+    onHead.push({ label: "Merge this commit", run: mergeCommitFromMenu });
+  }
+  if (!chip && can.rebase) {
+    onHead.push(
+      menuRebaseTargets.value.length > 0
+        ? { label: "Rebase onto", sub: "rebase" }
+        : { label: "Rebase onto this commit", run: () => doRebaseOnto(m.hash) },
+    );
+  }
+  if (can.reset) {
+    onHead.push({ label: "Reset to this commit…", run: doResetAsk });
+  }
+  if (can.rewrite) {
+    onHead.push({ label: "Reword message…", run: rewordFromMenu });
+    onHead.push({ label: "Drop this commit", run: () => doRewrite("drop", [m.hash], "") });
+  }
+  groups.push({
+    header: headBranch.value ? `On branch ${headBranch.value.name}` : "HEAD detached",
+    items: onHead,
+  });
+  const more = [];
+  if (chip) {
+    more.push(openChanges, compare);
+  } else if (!menuCheckoutTargets.value.length && can.checkoutDetached) {
+    more.push({ label: "Checkout (detached)", run: checkoutDetachedFromMenu });
+  }
+  more.push({ label: "Create branch…", run: createBranchFromMenu });
+  more.push({ label: "Create tag…", run: () => doCreateTag(m.hash, shortHash(m.hash)) });
+  if (chip && menuBranchItems.value.length) {
+    more.push({ label: "Branch", sub: "branch" });
+  }
+  more.push({ label: "Copy", sub: "copy" });
+  more.push({
+    label: checked.value.includes(m.hash) ? "Unselect" : "Select",
+    run: toggleCheckFromMenu,
+  });
+  groups.push({ items: more });
+  return groups.filter((g) => g.items.length > 0);
+});
+
+// The branch's own housekeeping, nested: renaming, force-pushing and
+// deleting are rare, and the last two are the riskiest items in the menu.
+const menuBranchItems = computed(() => {
+  const chip = menuChip.value;
+  if (!chip) {
+    return [];
+  }
+  const items = [];
+  if (chip.kind === "local") {
+    items.push({ label: "Rename…", run: () => doRenameBranch(chip.name) });
+    if (menuChipUpstream.value) {
+      items.push({ label: "Force push…", run: () => pushFromBranchMenu(true) });
+    }
+    if (!menuChipIsHead.value) {
+      items.push({
+        label: menuChipWorktree.value ? "Delete branch and worktree" : "Delete branch",
+        run: () => doDeleteBranch(chip.name),
+      });
+    }
+  }
+  if (menuChipRemote.value) {
+    items.push({
+      label: `Delete from ${menuChipRemote.value.remote}…`,
+      run: askDeleteRemoteFromBranchMenu,
+    });
+  }
+  return items;
+});
+
+// The nested lists, as data like the menu itself.
+const submenuItems = computed(() => {
+  const s = submenu.value;
+  const m = menu.value;
+  if (!s || !m) {
+    return [];
+  }
+  switch (s.key) {
+    case "checkout": {
+      const items = menuCheckoutTargets.value.map((t) => ({
+        label: t.name,
+        icon: t.kind === "tag" ? ICON_TAG : ICON_BRANCH,
+        run: () => doCheckout(t.name),
+      }));
+      if (menuCan.value.checkoutDetached) {
+        items.push({ label: "Detached at this commit", run: checkoutDetachedFromMenu });
+      }
+      return items;
+    }
+    case "rebase":
+      return [
+        ...menuRebaseTargets.value.map((b) => ({
+          label: b.name,
+          run: () => doRebaseOnto(b.name),
+        })),
+        { label: "This commit", run: () => doRebaseOnto(m.hash) },
+      ];
+    case "compare": {
+      const items = [];
+      if (menuCompareRemote.value) {
+        items.push({ label: menuCompareRemote.value.name, run: compareWithRemoteFromMenu });
+        items.push({
+          label: `Merge base with ${menuCompareRemote.value.name}`,
+          run: compareWithMergeBaseFromMenu,
+        });
+      }
+      items.push({ label: "Another ref…", run: compareRefFromMenu });
+      items.push({ label: "Working tree", run: compareWorktreeFromMenu });
+      return items;
+    }
+    case "branch":
+      return menuBranchItems.value;
+    case "copy": {
+      const items = [
+        { label: "Commit hash", run: () => copyHash(m.hash) },
+        { label: "Commit message", run: copyCommitMessage },
+      ];
+      if (menuChip.value) {
+        items.push({ label: "Branch name", run: () => copyBranchName(menuChip.value.name) });
+      }
+      return items;
+    }
+    default:
+      return [];
+  }
+});
+
+function rewordFromMenu() {
+  const m = menu.value;
+  if (!m) {
+    return;
+  }
+  rewordPos.value = clampXY(m.x, m.y, 320, 170);
+  rewordFor.value = m.hash;
+  rewordText.value = "";
+  menu.value = null;
+}
+
+function toggleCheckFromMenu() {
+  const m = menu.value;
+  if (!m) {
+    return;
+  }
+  checked.value = toggleCheck(checked.value, m.hash);
+  anchor.value = m.hash;
+  menu.value = null;
+}
+
+// `prefill` is the name the user almost certainly wants: creating a branch
+// from a remote ref is "the same branch, but local".
+function createBranchFromMenu() {
+  const m = menu.value;
+  const chip = menuChip.value;
+  if (!m) {
+    return;
+  }
+  const remote = chip && chip.kind !== "local";
+  doCreateBranch(
+    m.hash,
+    remote ? chip.name : shortHash(m.hash),
+    remote && menuChipRemote.value ? menuChipRemote.value.short : "",
+  );
+}
 
 function openChangesFromMenu() {
   const hash = menu.value && menu.value.hash;
@@ -4984,13 +5420,13 @@ startPoll();
     </div>
 
     <!--
-      One menu for a commit. Opened on the row it carries the commit's
-      actions; opened on a ref chip it also carries that branch's. Every
-      item either can be done: the repeated ones (checkout, rebase, compare)
-      nest, and the ones git would refuse are not rendered at all.
+      One menu for a commit, rendered from menuGroups. Opened on a ref chip
+      it leads with that branch's actions. Every item can be done: the ones
+      git would refuse are not rendered at all, and the rare ones nest.
     -->
     <div
       v-if="menu && menuCommit"
+      ref="menuEl"
       class="plegma-menu"
       :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
       @click.stop
@@ -5021,348 +5457,80 @@ startPoll();
         <template v-else>{{ shortHash(menu.hash) }} {{ menuCommit.subject.slice(0, 40) }}</template>
       </div>
       <div v-if="menuChipWorktree" class="plegma-menu-worktree">📁 {{ menuChipWorktree }}</div>
-
-      <template v-if="menuMulti">
-        <!--
-          A selection of two or more commits: only the actions that work on
-          all of them. Single-commit actions (revert, reset, checkout, …)
-          would silently apply to one commit of the set, so they are absent.
-        -->
-        <div class="plegma-menu-item" @click="doRewrite('squash', menuMulti, '')">
-          Squash into oldest
-        </div>
-        <div class="plegma-menu-item" @click="doRewrite('drop', menuMulti, '')">
-          Drop
-        </div>
-        <div class="plegma-menu-sep"></div>
-        <div class="plegma-menu-item" @click="copyHashes(menuMulti)">
-          Copy hashes
-        </div>
-        <div class="plegma-menu-item" @click="copyMessages(menuMulti)">
-          Copy messages
-        </div>
-      </template>
-
-      <template v-else>
-        <!--
-          Update leads the menu: pulling is the most likely next step for a
-          branch that tracks a live remote ref. Rendered only then — a
-          pruned ("gone") upstream has nothing to pull, so the action is
-          absent rather than failing. On a branch other than the checked-out
-          one it fast-forwards in place (fetch) instead of switching
-          branches around it; the separate fetch item covers only what
-          Update cannot.
-        -->
-        <template v-if="menuChipUpdateOffered">
+      <template v-for="(g, gi) in menuGroups" :key="'g' + gi">
+        <div v-if="gi > 0" class="plegma-menu-sep"></div>
+        <div v-if="g.header" class="plegma-menu-header plegma-menu-section">{{ g.header }}</div>
+        <template v-for="item in g.items" :key="item.label">
           <div
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="doUpdateBranch(menuChip.name)"
+            v-if="item.sub"
+            class="plegma-menu-item plegma-menu-sub"
+            @mouseenter="openSubmenu($event, item.sub)"
+            @click.stop="toggleSubmenu($event, item.sub)"
           >
-            <template v-if="menuChipIsHead">Pull from {{ menuChipUpstream }}</template>
-            <template v-else>Fetch from {{ menuChipUpstream }}</template>
+            {{ item.label }} <span class="plegma-menu-arrow">▸</span>
           </div>
-          <div class="plegma-menu-sep"></div>
-        </template>
-        <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="openChangesFromMenu()">
-          Open changes
-        </div>
-        <div
-          v-if="!menuAtHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="checkoutDetachedFromMenu()"
-        >
-          Checkout (detached)
-        </div>
-        <div
-          v-if="menuCheckoutTargets.length > 0"
-          class="plegma-menu-item plegma-menu-sub"
-          @mouseenter="openSubmenu($event, 'checkout')"
-          @click.stop="toggleSubmenu($event, 'checkout')"
-        >
-          Checkout <span class="plegma-menu-arrow">▸</span>
-        </div>
-        <div class="plegma-menu-sep"></div>
-        <div
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="
-            checked = toggleCheck(checked, menu.hash);
-            anchor = menu.hash;
-            menu = null;
-          "
-        >
-          {{ checked.includes(menu.hash) ? "Unselect" : "Select" }}
-        </div>
-        <div
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="
-            rewordPos = clampXY(menu.x, menu.y, 320, 170);
-            rewordFor = menu.hash;
-            rewordText = '';
-            menu = null;
-          "
-        >
-          Reword message…
-        </div>
-        <div
-          v-if="menuTargets.length >= 2"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="doRewrite('squash', menuTargets, '')"
-        >
-          Squash {{ menuTargets.length }} selected
-        </div>
-        <div
-          v-if="menuTargets.length > 0"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="doRewrite('drop', menuTargets, '')"
-        >
-          Drop {{ menuTargets.length > 1 ? `${menuTargets.length} selected` : "this commit" }}
-        </div>
-        <div
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="
-            doCreateBranch(
-              menu.hash,
-              menuChip && menuChip.kind !== 'local' ? menuChip.name : shortHash(menu.hash),
-              menuChip && menuChip.kind !== 'local' && menuChipRemote ? menuChipRemote.short : '',
-            )
-          "
-        >
-          Create branch…
-        </div>
-        <div
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="doCreateTag(menu.hash, shortHash(menu.hash))"
-        >
-          Create tag…
-        </div>
-        <div
-          class="plegma-menu-item plegma-menu-sub"
-          @mouseenter="openSubmenu($event, 'compare')"
-          @click.stop="toggleSubmenu($event, 'compare')"
-        >
-          Compare with <span class="plegma-menu-arrow">▸</span>
-        </div>
-
-        <!--
-          Everything that changes the checked-out branch, under one header
-          that names it, so the items themselves need not repeat it.
-        -->
-        <div class="plegma-menu-sep"></div>
-        <div class="plegma-menu-header plegma-menu-section">
-          {{ headBranch ? `On branch ${headBranch.name}` : "HEAD detached" }}
-        </div>
-        <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="revertFromMenu()">
-          Revert this commit
-        </div>
-        <div
-          v-if="!menuAtHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="cherryPickFromMenu()"
-        >
-          Cherry-pick this commit
-        </div>
-        <!-- On a branch chip the branch merge below is the same commit with a
-             better merge message, so the commit merge would only duplicate it. -->
-        <div
-          v-if="!menuAtHead && !(menuChip && headBranch)"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="mergeCommitFromMenu()"
-        >
-          Merge this commit…
-        </div>
-        <div
-          v-if="menuChip && menuChip.kind === 'local' && headBranch && !menuChipIsHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="mergeFromBranchMenu()"
-        >
-          Merge branch
-        </div>
-        <div
-          v-if="menuChipRemote && headBranch && !menuChipIsHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="doPullRemoteBranch()"
-        >
-          Pull {{ menuChipRemoteName }}
-        </div>
-        <div
-          v-if="menuRebaseTargets.length > 0 || !menuAtHead"
-          class="plegma-menu-item plegma-menu-sub"
-          @mouseenter="openSubmenu($event, 'rebase')"
-          @click.stop="toggleSubmenu($event, 'rebase')"
-        >
-          Rebase onto <span class="plegma-menu-arrow">▸</span>
-        </div>
-        <div
-          v-if="!menuAtHead"
-          class="plegma-menu-item"
-          @mouseenter="onPlainItem"
-          @click="doResetAsk()"
-        >
-          Reset to this commit…
-        </div>
-
-        <template v-if="menuChip">
-          <div class="plegma-menu-sep"></div>
-          <!--
-            The branch's own actions; the chip header names the branch.
-            What the commit's own items already cover — checking the branch
-            out, rebasing onto it, branching from it — is not repeated.
-            Update lives at the top of the menu instead of here.
-          -->
-          <div
-            v-if="menuChip.kind === 'local'"
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="pushFromBranchMenu(false)"
-          >
-            <template v-if="menuChipUpstream">Push to {{ menuChipUpstream }}</template>
-            <template v-else>Push…</template>
-          </div>
-          <div
-            v-if="menuChip.kind === 'local' && menuChipUpstream"
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="pushFromBranchMenu(true)"
-          >
-            Force push…
-          </div>
-          <div
-            v-if="menuChip.kind === 'local'"
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="doRenameBranch(menuChip.name)"
-          >
-            Rename branch…
-          </div>
-          <div
-            v-else
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="checkoutTrackingFromBranchMenu()"
-          >
-            Checkout as {{ menuChipLocalName }}
-          </div>
-          <div
-            v-if="menuChip.kind === 'local' && !menuChipIsHead"
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="doDeleteBranch(menuChip.name)"
-          >
-            Delete branch<template v-if="menuChipWorktree"> and worktree</template>
-          </div>
-          <template v-if="menuChipRemote">
-            <!-- Kept only where Update cannot go (a local branch with no
-                 live upstream, or a remote-only chip): there it is the
-                 only in-place fast-forward. -->
-            <div
-              v-if="menuChipFetchAllowed && !menuChipUpdateOffered"
-              class="plegma-menu-item"
-              @mouseenter="onPlainItem"
-              @click="doFetchRemoteBranch()"
-            >
-              Fetch from {{ menuChipRemoteName }}
-            </div>
-            <div
-              class="plegma-menu-item"
-              @mouseenter="onPlainItem"
-              @click="askDeleteRemoteFromBranchMenu()"
-            >
-              Delete from {{ menuChipRemote.remote }}
-            </div>
-          </template>
-          <div
-            class="plegma-menu-item"
-            @mouseenter="onPlainItem"
-            @click="copyBranchName(menuChip.name)"
-          >
-            Copy branch name
+          <div v-else class="plegma-menu-item" @mouseenter="onPlainItem" @click="item.run()">
+            {{ item.label }}
           </div>
         </template>
-
-        <div class="plegma-menu-sep"></div>
-        <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="copyHash(menu.hash)">
-          Copy commit hash
-        </div>
-        <div class="plegma-menu-item" @mouseenter="onPlainItem" @click="copyCommitMessage()">
-          Copy commit message
-        </div>
       </template>
     </div>
 
-    <!--
-      Nested lists: the refs this commit can be checked out from, the refs
-      the current branch can be rebased onto, and the other sides of a
-      comparison. Opened by hovering or clicking their parent item.
-    -->
     <div
       v-if="menu && submenu"
+      ref="submenuEl"
       class="plegma-menu plegma-menu-submenu"
       :style="{ left: submenu.x + 'px', top: submenu.y + 'px' }"
       @click.stop
       @mouseenter="clearHoverTimer()"
       @mouseleave="closeSubmenu()"
     >
-      <template v-if="submenu.key === 'checkout'">
-        <div
-          v-for="t in menuCheckoutTargets"
-          :key="t.kind + t.name"
-          class="plegma-menu-item"
-          @click="doCheckout(t.name)"
+      <div
+        v-for="item in submenuItems"
+        :key="item.label"
+        class="plegma-menu-item"
+        @click="item.run()"
+      >
+        <svg
+          v-if="item.icon"
+          viewBox="0 0 16 16"
+          width="12"
+          height="12"
+          fill="currentColor"
+          aria-hidden="true"
+          class="plegma-menu-chipicon"
         >
-          <svg
-            viewBox="0 0 16 16"
-            width="12"
-            height="12"
-            fill="currentColor"
-            aria-hidden="true"
-            class="plegma-menu-chipicon"
-          >
-            <path :d="t.kind === 'tag' ? ICON_TAG : ICON_BRANCH" />
-          </svg>
-          {{ t.name }}
-        </div>
-      </template>
-      <template v-else-if="submenu.key === 'rebase'">
-        <div
-          v-for="b in menuRebaseTargets"
-          :key="'rebase-' + b.name"
-          class="plegma-menu-item"
-          @click="doRebaseOnto(b.name)"
-        >
-          {{ b.name }}
-        </div>
-        <div v-if="!menuAtHead" class="plegma-menu-item" @click="doRebaseOnto(menu.hash)">
-          This commit
-        </div>
-      </template>
-      <template v-else-if="submenu.key === 'compare'">
-        <div v-if="menuCompareRemote" class="plegma-menu-item" @click="compareWithRemoteFromMenu()">
-          {{ menuCompareRemote.name }}
-        </div>
-        <div
-          v-if="menuCompareRemote"
-          class="plegma-menu-item"
-          @click="compareWithMergeBaseFromMenu()"
-        >
-          Merge base with {{ menuCompareRemote.name }}
-        </div>
-        <div class="plegma-menu-item" @click="compareRefFromMenu()">Another ref…</div>
-        <div class="plegma-menu-item" @click="compareWorktreeFromMenu()">
-          Working tree
-        </div>
-      </template>
+          <path :d="item.icon" />
+        </svg>
+        {{ item.label }}
+      </div>
+    </div>
+
+    <div
+      v-if="stashGate"
+      style="
+        position: fixed;
+        z-index: 101;
+        width: 320px;
+        background: var(--vscode-menu-background);
+        border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        padding: 10px;
+        font-size: 12px;
+      "
+      :style="{ left: stashGate.x + 'px', top: stashGate.y + 'px' }"
+      @click.stop
+    >
+      <div style="margin-bottom: 8px">
+        {{ trackedChanges }} uncommitted change{{ trackedChanges === 1 ? "" : "s" }} would block the
+        {{ stashGate.verb }}. Stash them, {{ stashGate.verb }}, then restore them?
+      </div>
+      <div style="display: flex; gap: 6px; justify-content: flex-end">
+        <button @click="stashGate = null">Cancel</button>
+        <button :disabled="opBusy" @click="confirmStashGate()">
+          Stash and {{ stashGate.verb }}
+        </button>
+      </div>
     </div>
 
     <div
@@ -5512,7 +5680,9 @@ startPoll();
       <div style="margin-bottom: 6px">
         Reset {{ headBranch ? headBranch.name : "current branch" }} to
         {{ shortHash(resetTarget.sha) }} ({{ resetTarget.mode }})?
-        <span v-if="resetTarget.mode === 'hard'">This discards all uncommitted changes.</span>
+        <span v-if="resetTarget.mode === 'hard' && trackedChanges"
+          >Your uncommitted changes are stashed first, not discarded.</span
+        >
       </div>
       <div style="display: flex; gap: 6px; justify-content: flex-end">
         <div style="display: flex; gap: 10px; margin: 6px 0 8px">

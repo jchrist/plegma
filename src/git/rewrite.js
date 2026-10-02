@@ -83,11 +83,55 @@ class MergeConflictError extends Error {
   }
 }
 
+// Untracked files do not count: git refuses to overwrite them on its own.
+async function hasTrackedChanges(run, repoRoot) {
+  const out = await run(repoRoot, ["status", "--porcelain", "--untracked-files=no"]);
+  return out.trim() !== "";
+}
+
 async function guardClean(run, repoRoot) {
-  const out = await run(repoRoot, ["status", "--porcelain"]);
-  if (out.trim()) {
+  if (await hasTrackedChanges(run, repoRoot)) {
     throw new Error("Working tree is not clean. Commit or stash changes first.");
   }
+}
+
+// For verbs git offers no --autostash for. Each of them aborts itself on
+// failure, so the stash is restored either way.
+async function withAutostash(run, repoRoot, label, fn) {
+  if (!(await hasTrackedChanges(run, repoRoot))) {
+    return fn();
+  }
+  await run(repoRoot, ["stash", "push", "-m", `plegma: autostash before ${label}`]);
+  let stashSha = null;
+  try {
+    stashSha = (await run(repoRoot, ["rev-parse", "--verify", "refs/stash"])).trim() || null;
+  } catch {
+    stashSha = null;
+  }
+  const restore = async () => {
+    try {
+      await run(repoRoot, ["stash", "pop"]);
+      return "";
+    } catch (e) {
+      const where = stashSha ? `stash ${stashSha.slice(0, 7)}` : "your new stash entry";
+      return ` Your uncommitted changes are safe in ${where} (restore failed: ${(e && e.message) || e}). Recover with \`git stash pop\`.`;
+    }
+  };
+  let result;
+  try {
+    result = await fn();
+  } catch (err) {
+    const note = await restore();
+    if (err && note) {
+      err.message = `${err.message}${note}`;
+    }
+    throw err;
+  }
+  const note = await restore();
+  if (note) {
+    throw new Error(`${label} succeeded, but${note.replace(/^ Your/, " your")}`);
+  }
+  return result;
 }
 
 // entries oldest-first with parents, for base..HEAD.
@@ -174,7 +218,9 @@ async function executeRewrite(run, repoRoot, spec) {
   if (reword && (!reword.message || !reword.message.trim())) {
     throw new Error("Reword needs a non-empty message.");
   }
-  await guardClean(run, repoRoot);
+  if (!spec.autostash) {
+    await guardClean(run, repoRoot);
+  }
   // Base = parent of the oldest affected commit in HEAD history.
   const allLog = await run(repoRoot, ["log", "--reverse", "--format=%H", "HEAD"]);
   const order = allLog
@@ -207,7 +253,9 @@ async function executeRewrite(run, repoRoot, spec) {
     ...(message ? { PLEGMA_MESSAGE: message } : {}),
   };
   try {
-    await run(repoRoot, ["rebase", "-i", base], { env });
+    await run(repoRoot, ["rebase", "-i", ...(spec.autostash ? ["--autostash"] : []), base], {
+      env,
+    });
   } catch (err) {
     await throwIfConflict(run, repoRoot, "Rewrite");
     throw err;
@@ -215,17 +263,20 @@ async function executeRewrite(run, repoRoot, spec) {
   return { rewritten: true, backupRef };
 }
 
-async function rebaseOnto(run, repoRoot, upstream) {
+async function rebaseOnto(run, repoRoot, upstream, opts = {}) {
   if (!repoRoot) {
     throw new Error("No git repository found in workspace.");
   }
   if (!upstream || !upstream.trim()) {
     throw new Error("Rebase needs a target branch.");
   }
-  await guardClean(run, repoRoot);
+  const autostash = !!(opts && opts.autostash);
+  if (!autostash) {
+    await guardClean(run, repoRoot);
+  }
   const backupRef = await createBackupRef(run, repoRoot);
   try {
-    await run(repoRoot, ["rebase", upstream.trim()], {
+    await run(repoRoot, ["rebase", ...(autostash ? ["--autostash"] : []), upstream.trim()], {
       env: { ...process.env, GIT_EDITOR: "true" },
     });
   } catch (err) {
@@ -286,7 +337,7 @@ async function unmergedFiles(run, repoRoot) {
 // Merge a branch into the current one. On conflict the merge is left in
 // progress and a MergeConflictError carries the conflicted files, so the
 // webview banner can offer Continue/Abort.
-async function mergeBranch(run, repoRoot, name) {
+async function mergeBranch(run, repoRoot, name, opts = {}) {
   if (!repoRoot) {
     throw new Error("No git repository found in workspace.");
   }
@@ -294,10 +345,13 @@ async function mergeBranch(run, repoRoot, name) {
   if (!target || target.startsWith("-")) {
     throw new Error(`Refusing to merge suspicious ref: ${name}`);
   }
-  await guardClean(run, repoRoot);
+  const autostash = !!(opts && opts.autostash);
+  if (!autostash) {
+    await guardClean(run, repoRoot);
+  }
   const backupRef = await createBackupRef(run, repoRoot);
   try {
-    await run(repoRoot, ["merge", "--no-edit", target], {
+    await run(repoRoot, ["merge", ...(autostash ? ["--autostash"] : []), "--no-edit", target], {
       env: { ...process.env, GIT_EDITOR: "true" },
     });
   } catch (err) {
@@ -318,12 +372,12 @@ async function mergeBranch(run, repoRoot, name) {
 // Merge a commit into the current one (native "Merge into current
 // branch..."). Shares mergeBranch's conflict flow; the SHA allow-list
 // keeps user input from reaching git as a flag or revision expression.
-async function mergeCommit(run, repoRoot, sha) {
+async function mergeCommit(run, repoRoot, sha, opts = {}) {
   const target = (sha || "").trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(target)) {
     throw new Error(`Refusing to merge suspicious commit: ${sha}`);
   }
-  return mergeBranch(run, repoRoot, target);
+  return mergeBranch(run, repoRoot, target, opts);
 }
 
 async function mergeStatus(run, repoRoot) {
@@ -366,13 +420,18 @@ async function mergeAbort(run, repoRoot) {
 // Apply one commit onto the current branch. On conflict the pick is
 // aborted and a conflict-shaped error lists the files, so the repo is
 // never left mid-pick (no cherry-pick banner in V1).
-async function cherryPick(run, repoRoot, sha) {
+async function cherryPick(run, repoRoot, sha, opts = {}) {
   if (!repoRoot) {
     throw new Error("No git repository found in workspace.");
   }
   const target = (sha || "").trim();
   if (!target || target.startsWith("-")) {
     throw new Error(`Refusing to cherry-pick suspicious ref: ${sha}`);
+  }
+  if (opts && opts.autostash) {
+    return withAutostash(run, repoRoot, `cherry-pick ${target.slice(0, 7)}`, () =>
+      cherryPick(run, repoRoot, target),
+    );
   }
   await guardClean(run, repoRoot);
   const backupRef = await createBackupRef(run, repoRoot);
@@ -400,7 +459,7 @@ async function cherryPick(run, repoRoot, sha) {
 // mixed (HEAD + index, keeps files), or hard (discards all changes).
 // Hard requires a clean tree since uncommitted work is unrecoverable;
 // every mode takes a backup ref first.
-async function resetTo(run, repoRoot, sha, mode) {
+async function resetTo(run, repoRoot, sha, mode, opts = {}) {
   if (!repoRoot) {
     throw new Error("No git repository found in workspace.");
   }
@@ -412,23 +471,35 @@ async function resetTo(run, repoRoot, sha, mode) {
   if (!["soft", "mixed", "hard"].includes(cleanMode)) {
     throw new Error(`Unknown reset mode: ${mode}`);
   }
+  let stashed = false;
   if (cleanMode === "hard") {
+    // A hard reset with autostash keeps the changes in a stash instead of
+    // discarding them, and deliberately does not restore them.
+    if (opts && opts.autostash && (await hasTrackedChanges(run, repoRoot))) {
+      await run(repoRoot, ["stash", "push", "-m", `plegma: before reset to ${target.slice(0, 7)}`]);
+      stashed = true;
+    }
     await guardClean(run, repoRoot);
   }
   const backupRef = await createBackupRef(run, repoRoot);
   await run(repoRoot, ["reset", `--${cleanMode}`, target]);
-  return { reset: true, backupRef };
+  return stashed ? { reset: true, backupRef, stashed: true } : { reset: true, backupRef };
 }
 
 // Create a new commit that undoes another one. Nothing is destroyed, so
 // no backup ref — but conflicts still abort with a conflict-shaped error.
-async function revertCommit(run, repoRoot, sha) {
+async function revertCommit(run, repoRoot, sha, opts = {}) {
   if (!repoRoot) {
     throw new Error("No git repository found in workspace.");
   }
   const target = (sha || "").trim();
   if (!target || target.startsWith("-")) {
     throw new Error(`Refusing to revert suspicious ref: ${sha}`);
+  }
+  if (opts && opts.autostash) {
+    return withAutostash(run, repoRoot, `revert ${target.slice(0, 7)}`, () =>
+      revertCommit(run, repoRoot, target),
+    );
   }
   await guardClean(run, repoRoot);
   try {

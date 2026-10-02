@@ -125,8 +125,12 @@ function stubService(overrides = {}) {
       calls.push(["mergeAbort"]);
       return { aborted: true };
     },
-    async cherryPick(sha) {
-      calls.push(["cherryPick", sha]);
+    async commitContext(shas) {
+      calls.push(["commitContext", shas]);
+      return { head: "h", commits: {} };
+    },
+    async cherryPick(sha, opts) {
+      calls.push(["cherryPick", sha, opts]);
       return { picked: true, backupRef: "refs/plegma-backup/main-2" };
     },
     async resetTo(sha, mode) {
@@ -603,7 +607,42 @@ describe("handleGitRequest", () => {
       ok: true,
       data: { picked: true, backupRef: "refs/plegma-backup/main-2" },
     });
-    assert.deepEqual(svc.calls, [["cherryPick", "abc123"]]);
+    assert.deepEqual(svc.calls, [["cherryPick", "abc123", { autostash: false }]]);
+  });
+
+  it("forwards autostash to the history verbs and serves commitContext", async () => {
+    const seen = [];
+    const record = (name) =>
+      async function (...args) {
+        seen.push([name, ...args]);
+        return {};
+      };
+    const svc = stubService({
+      rebaseOnto: record("rebaseOnto"),
+      mergeBranch: record("mergeBranch"),
+      mergeCommit: record("mergeCommit"),
+      cherryPick: record("cherryPick"),
+      revertCommit: record("revertCommit"),
+      resetTo: record("resetTo"),
+    });
+    const on = { autostash: true };
+    await handleGitRequest(svc, req("a1", "rebase", { upstream: "main", autostash: true }));
+    await handleGitRequest(svc, req("a2", "mergeBranch", { name: "f", autostash: true }));
+    await handleGitRequest(svc, req("a3", "mergeCommit", { sha: "abc", autostash: true }));
+    await handleGitRequest(svc, req("a4", "cherryPick", { sha: "abc", autostash: true }));
+    await handleGitRequest(svc, req("a5", "revertCommit", { sha: "abc", autostash: true }));
+    await handleGitRequest(svc, req("a6", "resetTo", { sha: "abc", mode: "hard", autostash: 1 }));
+    assert.deepEqual(seen, [
+      ["rebaseOnto", "main", on],
+      ["mergeBranch", "f", on],
+      ["mergeCommit", "abc", on],
+      ["cherryPick", "abc", on],
+      ["revertCommit", "abc", on],
+      ["resetTo", "abc", "hard", on],
+    ]);
+    const res = await handleGitRequest(svc, req("a7", "commitContext", { shas: ["abc"] }));
+    assert.deepEqual(res.data, { head: "h", commits: {} });
+    assert.deepEqual(svc.calls, [["commitContext", ["abc"]]]);
   });
 
   it("dispatches reset with mode and backup ref", async () => {

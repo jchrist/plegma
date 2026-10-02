@@ -61,6 +61,10 @@ async function createRootStore(vscode, output) {
   };
 }
 
+function autostashOpt(args) {
+  return { autostash: !!(args && args.autostash) };
+}
+
 // Dispatch a { type:'git/request', id, method, args } message to the service.
 // Returns the { type:'git/response', ... } object (or null if not a git message).
 async function handleGitRequest(service, msg) {
@@ -253,13 +257,13 @@ async function handleGitRequest(service, msg) {
         data = await service.rewrite(args || {});
         break;
       case "rebase":
-        data = await service.rebaseOnto(args && args.upstream);
+        data = await service.rebaseOnto(args && args.upstream, autostashOpt(args));
         break;
       case "mergeBranch":
-        data = await service.mergeBranch(args && args.name);
+        data = await service.mergeBranch(args && args.name, autostashOpt(args));
         break;
       case "mergeCommit":
-        data = await service.mergeCommit(args && args.sha);
+        data = await service.mergeCommit(args && args.sha, autostashOpt(args));
         break;
       case "mergeContinue":
         data = await service.mergeContinue();
@@ -271,13 +275,16 @@ async function handleGitRequest(service, msg) {
         data = await service.mergeStatus();
         break;
       case "cherryPick":
-        data = await service.cherryPick(args && args.sha);
+        data = await service.cherryPick(args && args.sha, autostashOpt(args));
         break;
       case "resetTo":
-        data = await service.resetTo(args && args.sha, args && args.mode);
+        data = await service.resetTo(args && args.sha, args && args.mode, autostashOpt(args));
         break;
       case "revertCommit":
-        data = await service.revertCommit(args && args.sha);
+        data = await service.revertCommit(args && args.sha, autostashOpt(args));
+        break;
+      case "commitContext":
+        data = await service.commitContext(args && args.shas);
         break;
       case "rebaseContinue":
         data = await service.rebaseContinue();
