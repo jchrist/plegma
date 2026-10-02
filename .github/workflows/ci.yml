@@ -119,8 +119,12 @@ jobs:
       # already knows the Ubuntu 24.04 package renames (libasound2 ->
       # libasound2t64 and friends) that a hand-written apt line keeps getting
       # wrong.
+      #
+      # Preserve PATH under sudo: setup-node put the upgraded npm on it, and a
+      # bare `sudo npx` falls back to the image's npm 10, which dies on the
+      # devEngines pin before doing anything.
       - name: Install Electron runtime libraries
-        run: sudo npx playwright install-deps chromium
+        run: sudo env PATH="$PATH" npx playwright install-deps chromium
 
       # @vscode/test-electron caches its download in .vscode-test/. The key is
       # unique per run so each run re-saves a fresh copy of "stable", and the
@@ -150,8 +154,9 @@ jobs:
 
       - run: npm ci
 
+      # Same PATH reason as above: bare `sudo npx` finds npm 10, not the pin.
       - name: Install Electron runtime libraries
-        run: sudo npx playwright install-deps chromium
+        run: sudo env PATH="$PATH" npx playwright install-deps chromium
 
       # Same download cache as the editor-host job; both use "stable".
       - name: Restore downloaded VS Code
