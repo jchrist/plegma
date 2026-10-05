@@ -1515,6 +1515,19 @@ function askFetch(e) {
 }
 // Ticked in the dialog to skip it next time ("don't ask again").
 const fetchRememberChoice = ref(false);
+// Tooltip mirrors the exact `git fetch` invocation the toolbar button will
+// run, so the options (always --all, plus --prune/--prune-tags when ticked)
+// are visible before clicking.
+const fetchTooltip = computed(() => {
+  const parts = ["git fetch --all"];
+  if (fetchOptions.value.prune) {
+    parts.push("--prune");
+  }
+  if (fetchOptions.value.pruneTags) {
+    parts.push("--prune-tags");
+  }
+  return `Fetch from remote (${parts.join(" ")})`;
+});
 async function runFetchFromDialog() {
   const opts = {
     prune: !!fetchOptions.value.prune,
@@ -4104,7 +4117,7 @@ startPoll();
           </button>
           <button
             class="plegma-icon-btn"
-            title="Fetch from remote (git fetch --all)"
+            :title="fetchTooltip"
             aria-label="Fetch from remote"
             :disabled="opBusy"
             @click="askFetch($event)"
