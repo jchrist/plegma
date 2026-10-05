@@ -1,41 +1,87 @@
 # Plegma
 
-Git history window for VS Code. Extension host in plain JavaScript, webview UI in Vue 3.
+**See your Git history. Understand your changes. Keep your work moving.**
 
-## What works
+Plegma is a free, open source Git history extension for Visual Studio Code. It brings a visual commit graph, branches, tags, and file changes into one editor tab, so you can explore how your project evolved and act on that history without leaving VS Code.
 
-- Status bar item opening the window as a central editor tab (`Plegma: Open Window`); the tab shows the same file as the Extensions page, the status bar the same pi as a glyph.
-- Multi-root workspaces show a repository picker in the toolbar; every pane follows the selected repo.
-- Command `Plegma: Probe Git Service` logs extension API availability plus live commit/branch/tag counts to the `Plegma` output channel.
-- Git Log webview shows live commit graph with lane colors, per-commit branch and tag labels, commit text filter, and a filterable branches/tags sidebar (local/remote/tags toggles + search).
-- Selecting a commit lists its changed files below the graph; double-clicking a file opens a standard diff (old revision vs new, temp files under the OS temp dir). Commits that vanished from history report a friendly message instead of a raw git error.
-- Icon toolbar: repository picker (multi-root only), commit order, branch filter, column toggles, find, refresh, and fetch with an options popover (prune branches / prune tags, remembered). `Ctrl+H` jumps to HEAD, `Ctrl+R` refreshes. Click / Ctrl-click / Shift-click selection, right-click menu per commit (reword, squash, drop, checkout branch, rebase current branch onto a branch or a commit, merge a commit into the current branch, copy hash). Auto-refresh when history changes outside the window.
-- Push lives in the context menus only (never the toolbar): `Push <branch>` runs straight through, setting the upstream when the branch has none, and `Force Push…` confirms first after creating a `refs/plegma-backup/` ref and using `--force-with-lease`. `Push Tag…` lives in the tag menu.
-- Hovering a commit opens the native-style popup: author, date, full message, how many files it changed with green `+additions` and red `-deletions`, its refs as separate chips (`main` and `origin/main`, each with its full name, nothing clipped), the full hash and its parents. It states facts and stops there — no instructions, no explanations. Clicking anywhere on a row — the graph, the chips, the subject — selects the commit and fills the side panels.
-- Context menus open on right-click only, and a commit has exactly one of them. On a row it leads with the commit (open changes, `Checkout`, `Compare with`); on a branch chip with the branch (checkout — `Checkout as <name>` for a remote branch — then pull or update, then push), with rename, force push and delete nested under `Branch`. What changes the checked-out branch (cherry-pick, revert, merge, rebase, reset, reword, drop) sits under one `On branch <name>` header, and only what git would accept is offered: nothing already in HEAD is merged, picked or rebased onto, nothing outside it is reverted or rewritten, and nothing moves HEAD while a merge or rebase is stopped. With uncommitted changes, those actions offer to stash them first and restore them afterwards. Right-clicking inside a selection of several commits offers only what works on all of them. Double-clicking a local branch chip checks it out.
-- Tick commits to Squash (any order, grouped at the earliest), Reword (single, optional new message), or Drop; Rebase-onto input plus Continue/Skip/Abort banner when a rebase hits conflicts.
-- Every rewrite creates a `refs/plegma-backup/` ref first and requires a clean tree. Stash and backup commits are hidden from the graph (they are not branch history and cannot be rewritten).
-- Stashes render as rows in the graph with Apply / Pop / Drop / Create-branch.
-- Branch filtering runs inside git: pick refs, only the checked-out branch, or a glob pattern; ordering can be topological, date, or author date.
-- Commit messages render as rich text (links, bold/italic/code, gitmoji) with author avatars, GPG signature state in Details, and per-file actions: copy relative/absolute path, view at revision, open working copy.
-- Git service (`src/git/`): all reads go through the `git` CLI. The built-in `vscode.git` API is used only where a native editor flow needs it (multi-file diff editors). Pure parsers in `src/git/parsers.js`, lane layout in `src/webview/graph.js`.
+Use it to follow a feature across branches, review what changed in a commit, compare your work with another branch, or tidy up commits before sharing them.
 
-## Develop
+![Plegma showing a commit graph, branch and tag labels, and file changes](resources/screenshots/history.png)
 
-```sh
-npm install
-npm run compile   # esbuild (extension host) + Vite (Vue webview)
-npm test          # unit + headless end-to-end (fixture repo, faked vscode API)
-xvfb-run -a npm run test:e2e   # official suite in a real editor (needs display or xvfb)
-```
+*Plegma's history view, shown with a sample repository.*
 
-Press F5 in VS Code to launch Extension Development Host, then run `Plegma: Open Window` or `Plegma: Probe Git Service`.
+## Features
 
-## License
+- **Explore your history visually.** Follow color-coded commit lanes and see where branches diverge and merge. Branch and tag labels show where each points, and commit details include the author, message, date, and signature status.
+- **Find the work that matters.** Search commits, browse branches and tags, and filter the graph to the current branch or selected branches. Choose the commit order and visible columns to suit your workflow.
+- **Review changes in context.** Select a commit to see its changed files and preview their differences. Open changes in VS Code's diff editors, compare commits or branches, and compare a revision with your uncommitted work.
+- **Manage branches and remotes.** Create, switch, rename, and delete branches; create and manage tags; and fetch, pull, or push from the history view. Repository settings also let you manage remotes.
+- **Shape your commit history.** Combine commits with squash, edit commit messages, drop commits, cherry-pick changes, revert commits, merge branches, rebase, or reset to an earlier point. Available actions follow the state of your repository.
+- **Keep track of work in progress.** Review uncommitted changes and manage stashes: apply them, restore and remove them, or turn them into a branch. Switch between repositories in a workspace, and see the view refresh as your repository changes.
 
-MIT — see [LICENSE](LICENSE).
+## Requirements
+
+- Visual Studio Code **1.85 or later**.
+- [Git](https://git-scm.com/) installed and available on your system's PATH.
+- A folder or workspace containing a Git repository.
+
+## Installation
+
+In VS Code, open **Extensions**, search for **Plegma** by **jchrist**, and select **Install**.
+
+If you have a packaged `.vsix` file, run **Extensions: Install from VSIX…** from the Command Palette and select it. To build a package yourself, see [Contributing](#contributing).
+
+## Getting started
+
+1. Open your project's folder or workspace in VS Code.
+2. Click **Plegma** in the status bar, or run **Plegma: Open Window** from the Command Palette.
+3. Select a commit to view its details and changed files. Click a file to preview its changes, or double-click it to open a diff editor.
+4. Right-click a commit, branch label, or tag to see its available actions.
+
+If your workspace contains multiple repositories, use the repository picker in the toolbar to choose which one to view.
+
+To combine commits, select multiple commits and right-click the selection to choose **Squash into oldest**. To change a commit message, right-click the commit and choose **Reword message…**.
+
+![Plegma's commit context menu with comparison and history actions](resources/screenshots/commit-actions.png)
+
+*Branch and commit actions are available directly from the graph.*
+
+## Working with history
+
+Plegma creates local backup references before rewriting history and asks for confirmation before destructive actions. When an operation needs a clean working tree, it can offer to stash your uncommitted changes first. If a merge or rebase stops with conflicts, the view provides controls to continue or abort; rebases also offer skip.
+
+Rewriting history changes commit identities. Coordinate with collaborators before rewriting commits that others already use. Backups preserve the previous commit history; they do not recover discarded uncommitted changes or deleted stashes.
+
+## Preferences
+
+Open **Settings** from Plegma's toolbar to customize author avatars, visible columns, commit ordering, the default branch filter, and defaults for fetching, stashing, and resetting. View preferences are saved on your machine and are not synced through VS Code Settings Sync.
+
+Author avatars are loaded from Gravatar. You can turn them off in Plegma's settings.
+
+## Feedback and support
+
+Report bugs and suggest improvements through [GitHub Issues](https://github.com/jchrist/plegma/issues). For a bug report, include your operating system, VS Code and Plegma versions, steps to reproduce the problem, and any relevant messages from the **Plegma** output channel. Remove private repository details before sharing logs or screenshots.
 
 ## Contributing
 
-`AGENTS.md` covers the architecture, the conventions that matter, and the test
-layout. Read it before changing anything.
+Bug fixes, documentation improvements, and feature contributions are welcome. For larger changes, open an issue first to discuss the approach. See [AGENTS.md](AGENTS.md) for project conventions and test guidance.
+
+To work on the extension, download the source from [GitHub](https://github.com/jchrist/plegma) and open it in VS Code. Use Node.js **22.18+ or 24.11+** and the npm version specified in `package.json`, then run:
+
+```sh
+npm ci
+npm run compile
+npm test
+```
+
+Press **F5** to launch an Extension Development Host, then run **Plegma: Open Window** there. Run the build and tests before submitting a pull request, and include a regression test for behavior changes.
+
+To build an installable `.vsix` file:
+
+```sh
+npm run package
+```
+
+## License
+
+Plegma is licensed under the [MIT License](LICENSE).
